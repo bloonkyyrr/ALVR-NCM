@@ -129,7 +129,12 @@ fn connection_pipeline(
 ) -> ConResult {
     dbg_connection!("connection_pipeline: Begin");
 
-    let (mut proto_control_socket, server_ip) = {
+    #[cfg(target_os = "android")]
+    if capabilities.platform.is_quest() {
+        alvr_system_info::request_usb_network();
+    }
+
+    let (mut proto_control_socket, server_address) = {
         let config = Config::load();
         let announcer_socket = AnnouncerSocket::new(&config.hostname).to_con()?;
         let listener_socket =
@@ -151,6 +156,7 @@ fn connection_pipeline(
             }
         }
     };
+    let server_ip = server_address.ip();
 
     let mut connection_state_lock = ctx.state.write();
     let disconnect_notif = Arc::new(Condvar::new());
@@ -167,7 +173,7 @@ fn connection_pipeline(
             ConnectionAcceptedInfo {
                 client_protocol_id: alvr_common::protocol_id_u64(),
                 platform_string: capabilities.platform.to_string(),
-                server_ip,
+                server_ip: server_address.ip(),
                 streaming_capabilities: Some(
                     VideoStreamingCapabilities {
                         default_view_resolution: capabilities.default_view_resolution,

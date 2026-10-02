@@ -8,7 +8,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use socket2::Socket;
 use std::{
     marker::PhantomData,
-    net::{IpAddr, Ipv4Addr, TcpListener},
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
     time::Duration,
 };
 
@@ -24,6 +24,7 @@ pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(2);
 pub const MDNS_SERVICE_TYPE: &str = "_alvr._tcp.local.";
 pub const MDNS_PROTOCOL_KEY: &str = "protocol";
 pub const MDNS_DEVICE_ID_KEY: &str = "device_id";
+pub const MDNS_USB_NETWORK_KEY: &str = "usb_network";
 
 pub const WIRED_CLIENT_HOSTNAME: &str = "client.wired";
 
@@ -97,15 +98,15 @@ fn set_dscp(socket: &Socket, dscp: Option<DscpTos>) {
 // is non-standard
 // todo: convert to class when storing a TcpListener
 pub fn connect_to_client<T: DeserializeOwned>(
-    client_ips: Vec<IpAddr>,
+    client_addresses: Vec<SocketAddr>,
     timeout: Duration,
-) -> ConResult<(ProtoControlSocket, IpAddr, T)> {
-    let (mut control_socket, client_ip) =
-        ProtoControlSocket::connect_to(timeout, PeerType::AnyClient(client_ips))?;
+) -> ConResult<(ProtoControlSocket, SocketAddr, T)> {
+    let (mut control_socket, client_address) =
+        ProtoControlSocket::connect_to(timeout, PeerType::AnyClient(client_addresses))?;
 
     let res = control_socket.recv(timeout)?;
 
-    Ok((control_socket, client_ip, res))
+    Ok((control_socket, client_address, res))
 }
 
 pub fn listen_to_server<T: DeserializeOwned>(

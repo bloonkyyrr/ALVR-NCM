@@ -4,8 +4,12 @@ use alvr_common::{
     warn,
 };
 use flume::TryRecvError;
-use mdns_sd::{Receiver, ServiceDaemon, ServiceEvent};
-use std::{collections::HashMap, net::IpAddr};
+use alvr_sockets::WIRED_CLIENT_HOSTNAME;
+use mdns_sd::{Receiver, ScopedIp, ServiceDaemon, ServiceEvent};
+use std::{
+    collections::HashMap,
+    net::{SocketAddr, SocketAddrV6},
+};
 
 pub struct WelcomeSocket {
     mdns_receiver: Receiver<ServiceEvent>,
@@ -18,8 +22,8 @@ impl WelcomeSocket {
         Ok(Self { mdns_receiver })
     }
 
-    // Returns: client IP, client hostname
-    pub fn recv_all(&self) -> Result<HashMap<String, IpAddr>> {
+    // Returns each client's control address and hostname.
+    pub fn recv_all(&self, prefer_horizon_usb: bool) -> Result<HashMap<String, SocketAddr>> {
         let mut clients = HashMap::new();
 
         loop {
@@ -54,7 +58,38 @@ impl WelcomeSocket {
                             warn!("Found incompatible client {hostname}! {reason}\n{protocols}");
                         }
 
-                        clients.insert(hostname.into(), address.to_ip_addr());
+                        let is_usb_network = info
+                            .get_property_val_str(alvr_sockets::MDNS_USB_NETWORK_KEY)
+                            == Some("true");
+                        if prefer_horizon_usb && !is_usb_network {
+                            continue;
+                        }
+                        let hostname = if prefer_horizon_usb && is_usb_network {
+                            WIRED_CLIENT_HOSTNAME
+                        } else {
+                            hostname
+                        };
+                        let address = match address {
+                            ScopedIp::V6(address) => {
+                                let ip = *address.addr();
+                                let scope_id = if ip.is_unicast_link_local() {
+                                    address.scope_id().index
+                                } else {
+                                    0
+                                };
+                                SocketAddr::V6(SocketAddrV6::new(
+                                    ip,
+                                    alvr_sockets::CONTROL_PORT,
+                                    0,
+                                    scope_id,
+                                ))
+                            }
+                            _ => SocketAddr::new(
+                                address.to_ip_addr(),
+                                alvr_sockets::CONTROL_PORT,
+                            ),
+                        };
+                        clients.insert(hostname.into(), address);
                     }
                 }
                 Err(TryRecvError::Empty) => break,

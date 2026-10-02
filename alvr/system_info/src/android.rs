@@ -11,9 +11,155 @@ use jni::{
 use std::{
     ffi::CStr,
     net::{IpAddr, Ipv4Addr},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 pub const MICROPHONE_PERMISSION: &str = "android.permission.RECORD_AUDIO";
+
+static USB_NETWORK_REQUESTED: AtomicBool = AtomicBool::new(false);
+static USB_NETWORK_BOUND: AtomicBool = AtomicBool::new(false);
+
+/// Request Horizon OS's USB NCM network and bind ALVR's process to it when available.
+/// This is intentionally best-effort: unsupported devices continue using Wi-Fi.
+pub fn request_usb_network() -> bool {
+    if USB_NETWORK_BOUND.load(Ordering::Relaxed) {
+        return true;
+    }
+
+    if !USB_NETWORK_REQUESTED.load(Ordering::Relaxed) {
+        let result = vm().attach_current_thread(|env| {
+            let manager = get_system_service(env, "connectivity")?;
+            let builder = env.new_object(
+                jni_str!("android/net/NetworkRequest$Builder"),
+                jni_str!("()V"),
+                &[],
+            )?;
+            let builder = env
+                .call_method(
+                    builder,
+                    jni_str!("addTransportType"),
+                    jni_sig!("(I)Landroid/net/NetworkRequest$Builder;"),
+                    &[8.into()], // NetworkCapabilities.TRANSPORT_USB
+                )?
+                .l()?;
+            let builder = env
+                .call_method(
+                    builder,
+                    jni_str!("removeCapability"),
+                    jni_sig!("(I)Landroid/net/NetworkRequest$Builder;"),
+                    &[12.into()], // NET_CAPABILITY_INTERNET
+                )?
+                .l()?;
+            let builder = env
+                .call_method(
+                    builder,
+                    jni_str!("removeCapability"),
+                    jni_sig!("(I)Landroid/net/NetworkRequest$Builder;"),
+                    &[13.into()], // NET_CAPABILITY_TRUSTED
+                )?
+                .l()?;
+            let request = env
+                .call_method(
+                    builder,
+                    jni_str!("build"),
+                    jni_sig!("()Landroid/net/NetworkRequest;"),
+                    &[],
+                )?
+                .l()?;
+            let callback = env.new_object(
+                jni_str!("android/net/ConnectivityManager$NetworkCallback"),
+                jni_str!("()V"),
+                &[],
+            )?;
+
+            // Keep the request registered while the app is running. Android retains the callback
+            // for the request and delivers the USB network asynchronously.
+            env.call_method(
+                manager,
+                jni_str!("requestNetwork"),
+                jni_sig!("(Landroid/net/NetworkRequest;Landroid/net/ConnectivityManager$NetworkCallback;)V"),
+                &[(&request).into(), (&callback).into()],
+            )?;
+            JniResult::Ok(())
+        });
+
+        if let Err(error) = result {
+            warn!("Could not request Horizon USB networking: {error}");
+            USB_NETWORK_REQUESTED.store(true, Ordering::Relaxed);
+            return false;
+        }
+        USB_NETWORK_REQUESTED.store(true, Ordering::Relaxed);
+    }
+
+    // requestNetwork is asynchronous. The connection retry loop polls for the USB network, so
+    // ALVR can continue advertising over Wi-Fi while the headset displays its consent prompt.
+    bind_available_usb_network()
+}
+
+pub fn is_usb_network_bound() -> bool {
+    USB_NETWORK_BOUND.load(Ordering::Relaxed)
+}
+
+fn bind_available_usb_network() -> bool {
+    let result = vm().attach_current_thread(|env| {
+        let manager = get_system_service(env, "connectivity")?;
+        let networks = env
+            .call_method(
+                manager,
+                jni_str!("getAllNetworks"),
+                jni_sig!("()[Landroid/net/Network;"),
+                &[],
+            )?
+            .l()?;
+        let networks = env.cast_local::<JObjectArray<JObject>>(networks)?;
+        for index in 0..networks.len(env)? {
+            let network = networks.get_element(env, index)?;
+            let capabilities = env
+                .call_method(
+                    &manager,
+                    jni_str!("getNetworkCapabilities"),
+                    jni_sig!("(Landroid/net/Network;)Landroid/net/NetworkCapabilities;"),
+                    &[(&network).into()],
+                )?
+                .l()?;
+            if capabilities.is_null() {
+                continue;
+            }
+            let is_usb = env
+                .call_method(
+                    capabilities,
+                    jni_str!("hasTransport"),
+                    jni_sig!("(I)Z"),
+                    &[8.into()], // NetworkCapabilities.TRANSPORT_USB
+                )?
+                .z()?;
+            if is_usb {
+                let bound = env
+                    .call_method(
+                        manager,
+                        jni_str!("bindProcessToNetwork"),
+                        jni_sig!("(Landroid/net/Network;)Z"),
+                        &[(&network).into()],
+                    )?
+                    .z()?;
+                if bound {
+                    USB_NETWORK_BOUND.store(true, Ordering::Relaxed);
+                    return JniResult::Ok(true);
+                }
+            }
+        }
+
+        JniResult::Ok(false)
+    });
+
+    match result {
+        Ok(bound) => bound,
+        Err(error) => {
+            warn!("Could not bind ALVR to Horizon USB networking: {error}");
+            false
+        }
+    }
+}
 
 pub fn vm() -> JavaVM {
     unsafe { JavaVM::from_raw(ndk_context::android_context().vm().cast()) }
@@ -124,6 +270,12 @@ fn get_system_service<'a>(env: &mut Env<'a>, service_name: &str) -> JniResult<JO
 
 // Note: tried and failed to use libc
 pub fn local_ip() -> IpAddr {
+    if USB_NETWORK_BOUND.load(Ordering::Relaxed)
+        && let Some(ip) = usb_network_ip()
+    {
+        return ip;
+    }
+
     vm().attach_current_thread(|env| {
         let wifi_manager = get_system_service(env, "wifi")?;
         let wifi_info = env
@@ -145,6 +297,108 @@ pub fn local_ip() -> IpAddr {
         )))
     })
     .unwrap()
+}
+
+fn usb_network_ip() -> Option<IpAddr> {
+    vm().attach_current_thread(|env| {
+        let manager = get_system_service(env, "connectivity")?;
+        let networks = env
+            .call_method(
+                &manager,
+                jni_str!("getAllNetworks"),
+                jni_sig!("()[Landroid/net/Network;"),
+                &[],
+            )?
+            .l()?;
+        let networks = env.cast_local::<JObjectArray<JObject>>(networks)?;
+        for index in 0..networks.len(env)? {
+            let network = networks.get_element(env, index)?;
+            let capabilities = env
+                .call_method(
+                    &manager,
+                    jni_str!("getNetworkCapabilities"),
+                    jni_sig!("(Landroid/net/Network;)Landroid/net/NetworkCapabilities;"),
+                    &[(&network).into()],
+                )?
+                .l()?;
+            if capabilities.is_null()
+                || !env
+                    .call_method(
+                        &capabilities,
+                        jni_str!("hasTransport"),
+                        jni_sig!("(I)Z"),
+                        &[8.into()],
+                    )?
+                    .z()?
+            {
+                continue;
+            }
+
+            let properties = env
+                .call_method(
+                    &manager,
+                    jni_str!("getLinkProperties"),
+                    jni_sig!("(Landroid/net/Network;)Landroid/net/LinkProperties;"),
+                    &[(&network).into()],
+                )?
+                .l()?;
+            if properties.is_null() {
+                continue;
+            }
+            let addresses = env
+                .call_method(
+                    properties,
+                    jni_str!("getLinkAddresses"),
+                    jni_sig!("()Ljava/util/List;"),
+                    &[],
+                )?
+                .l()?;
+            let count = env
+                .call_method(&addresses, jni_str!("size"), jni_sig!("()I"), &[])?
+                .i()?;
+            let mut ipv6 = None;
+            for address_index in 0..count {
+                let link_address = env
+                    .call_method(
+                        &addresses,
+                        jni_str!("get"),
+                        jni_sig!("(I)Ljava/lang/Object;"),
+                        &[address_index.into()],
+                    )?
+                    .l()?;
+                let inet_address = env
+                    .call_method(
+                        link_address,
+                        jni_str!("getAddress"),
+                        jni_sig!("()Ljava/net/InetAddress;"),
+                        &[],
+                    )?
+                    .l()?;
+                let host_address = env
+                    .call_method(
+                        inet_address,
+                        jni_str!("getHostAddress"),
+                        jni_sig!("()Ljava/lang/String;"),
+                        &[],
+                    )?
+                    .l()?;
+                let host_address = env.cast_local::<JString>(host_address)?.to_string();
+                let host_address = host_address.split('%').next().unwrap_or(&host_address);
+                if let Ok(ip) = host_address.parse::<IpAddr>() {
+                    if ip.is_ipv4() {
+                        return JniResult::Ok(Some(ip));
+                    }
+                    ipv6 = Some(ip);
+                }
+            }
+            if ipv6.is_some() {
+                return JniResult::Ok(ipv6);
+            }
+        }
+
+        JniResult::Ok(None)
+    })
+    .unwrap_or(None)
 }
 
 // This is needed to avoid wifi scans that disrupt streaming.

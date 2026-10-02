@@ -1393,6 +1393,15 @@ pub struct WiredClientAutoLaunchConfig {
     pub boot_delay: u32,
 }
 
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, Copy, Default)]
+pub enum WiredConnectionMode {
+    /// Use Android Debug Bridge to forward ALVR's ports to the headset.
+    #[default]
+    Adb,
+    /// Use the USB network exposed by Horizon OS 2.5 and newer.
+    HorizonUsb,
+}
+
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
 pub struct ConnectionConfig {
     #[schema(strings(
@@ -1412,6 +1421,10 @@ TCP: Slower than UDP, but more stable. Pick this if you experience video or audi
         help = r#"Wether ALVR should try to automatically launch the client when establishing a wired connection."#
     ))]
     pub wired_client_autolaunch: Switch<WiredClientAutoLaunchConfig>,
+
+    #[serde(default)]
+    #[schema(strings(help = "Select ADB port forwarding or Meta Horizon OS 2.5 USB networking for the Wired Connection toggle. USB networking requires a compatible headset and the USB connection permission in headset settings."))]
+    pub wired_connection_mode: WiredConnectionMode,
 
     #[cfg_attr(
         windows,
@@ -2210,6 +2223,9 @@ pub fn session_settings_default() -> SettingsDefault {
             wired_client_autolaunch: SwitchDefault {
                 enabled: true,
                 content: WiredClientAutoLaunchConfigDefault { boot_delay: 0 },
+            },
+            wired_connection_mode: WiredConnectionModeDefault {
+                variant: WiredConnectionModeDefaultVariant::Adb,
             },
             web_server_port: 8082,
             stream_port: 9944,

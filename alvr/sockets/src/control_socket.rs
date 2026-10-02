@@ -1,4 +1,4 @@
-use crate::{CONTROL_PORT, LOCAL_IP};
+use crate::LOCAL_IP;
 use alvr_common::{ConResult, HandleTryAgain, ToCon, anyhow::Result, con_bail};
 use alvr_session::{DscpTos, SocketBufferConfig};
 use bincode::config;
@@ -56,16 +56,14 @@ pub fn accept_from_server(
 
 pub fn connect_to_client(
     timeout: Duration,
-    client_ips: &[IpAddr],
-    port: u16,
+    client_addresses: &[SocketAddr],
     buffer_config: SocketBufferConfig,
 ) -> ConResult<(TcpStream, TcpStream)> {
-    let split_timeout = timeout / client_ips.len() as u32;
+    let split_timeout = timeout / client_addresses.len() as u32;
 
     let mut res = alvr_common::try_again();
-    for ip in client_ips {
-        res = TcpStream::connect_timeout(&SocketAddr::new(*ip, port), split_timeout)
-            .handle_try_again();
+    for address in client_addresses {
+        res = TcpStream::connect_timeout(address, split_timeout).handle_try_again();
 
         if res.is_ok() {
             break;
@@ -191,22 +189,22 @@ pub struct ProtoControlSocket {
 }
 
 pub enum PeerType<'a> {
-    AnyClient(Vec<IpAddr>),
+    AnyClient(Vec<SocketAddr>),
     Server(&'a TcpListener),
 }
 
 impl ProtoControlSocket {
-    pub fn connect_to(timeout: Duration, peer: PeerType<'_>) -> ConResult<(Self, IpAddr)> {
+    pub fn connect_to(timeout: Duration, peer: PeerType<'_>) -> ConResult<(Self, SocketAddr)> {
         let socket = match peer {
-            PeerType::AnyClient(ips) => {
-                connect_to_client(timeout, &ips, CONTROL_PORT, SocketBufferConfig::default())?.0
+            PeerType::AnyClient(addresses) => {
+                connect_to_client(timeout, &addresses, SocketBufferConfig::default())?.0
             }
             PeerType::Server(listener) => accept_from_server(listener, None, timeout)?.0,
         };
 
-        let peer_ip = socket.peer_addr().to_con()?.ip();
+        let peer_address = socket.peer_addr().to_con()?;
 
-        Ok((Self { inner: socket }, peer_ip))
+        Ok((Self { inner: socket }, peer_address))
     }
 
     pub fn send<S: Serialize>(&mut self, packet: &S) -> Result<()> {

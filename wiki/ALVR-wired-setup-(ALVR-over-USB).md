@@ -5,6 +5,18 @@ and accept the "Allow USB debugging?" popup displayed by the headset.
 
 Note that your headset will need to have Developer Mode and USB Debugging enabled to use this feature.
 
+### Meta Horizon OS 2.5 USB networking (no ADB)
+
+For Quest headsets running Horizon OS 2.5 or newer, ALVR can use the headset's native USB network
+instead of ADB port forwarding. In **Settings > Connection**, set **Wired Connection Mode** to
+**Horizon USB**. In the headset, enable **Settings > Link > USB connection for apps**, connect the
+USB cable, and accept ALVR's USB network request if prompted. Then enable **Wired Connection** on
+the dashboard's Devices screen.
+
+This mode does not require Developer Mode or USB debugging. Keep the headset app open while
+connecting. If the USB network is unavailable or denied, ALVR will wait for it and will not fall
+back to ADB; select **ADB** in Wired Connection Mode to use the existing ADB method instead.
+
 For Quest headsets see [here](https://developers.meta.com/horizon/documentation/native/android/mobile-device-setup/) for instructions.
 The last step about installing ADB should be skipped, as ALVR downloads a copy of ADB on it's own and uses that.
 

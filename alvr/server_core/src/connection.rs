@@ -36,7 +36,7 @@ use alvr_sockets::{
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     process::Command,
     sync::{Arc, mpsc::RecvTimeoutError},
     thread,
@@ -306,16 +306,19 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
     while *lifecycle_state.read() != LifecycleState::ShuttingDown {
         dbg_connection!("handshake_loop: Try connect to wired device");
 
+        let (wired_mode, wired_entry_enabled) = {
+            let session = SESSION_MANAGER.read();
+            (
+                session.settings().connection.wired_connection_mode,
+                session
+                    .client_list()
+                    .get(WIRED_CLIENT_HOSTNAME)
+                    .is_some_and(|info| info.connection_state == ConnectionState::Disconnected),
+            )
+        };
+
         let mut wired_client_ips = HashMap::new();
-        if SESSION_MANAGER
-            .read()
-            .client_list()
-            .iter()
-            .any(|(hostname, info)| {
-                info.connection_state == ConnectionState::Disconnected
-                    && hostname.as_str() == WIRED_CLIENT_HOSTNAME
-            })
-        {
+        if wired_entry_enabled && matches!(wired_mode, alvr_session::WiredConnectionMode::Adb) {
             // Make sure the wired connection is created once and kept alive
             let wired_connection = if let Some(connection) = &wired_connection {
                 connection
@@ -375,8 +378,12 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                 continue;
             }
 
-            let client_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-            wired_client_ips.insert(client_ip, WIRED_CLIENT_HOSTNAME.to_owned());
+            let client_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), CONTROL_PORT);
+            wired_client_ips.insert(client_address, WIRED_CLIENT_HOSTNAME.to_owned());
+        } else {
+            // Dropping the ADB connection kills the ADB server it started. Horizon USB mode
+            // discovers the headset over its native USB network and does not use ADB.
+            wired_connection = None;
         }
 
         if !wired_client_ips.is_empty()
@@ -406,7 +413,7 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                     })
             {
                 for ip in &connection_info.manual_ips {
-                    manual_client_ips.insert(*ip, hostname.clone());
+                    manual_client_ips.insert(SocketAddr::new(*ip, CONTROL_PORT), hostname.clone());
                 }
             }
             manual_client_ips
@@ -430,10 +437,16 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
             .connection
             .client_discovery
             .clone();
-        if let Switch::Enabled(config) = discovery_config {
+        let prefer_horizon_usb = wired_entry_enabled
+            && matches!(wired_mode, alvr_session::WiredConnectionMode::HorizonUsb);
+        let auto_trust_clients = match discovery_config {
+            Switch::Enabled(config) => Some(config.auto_trust_clients),
+            Switch::Disabled => None,
+        };
+        if auto_trust_clients.is_some() || prefer_horizon_usb {
             dbg_connection!("handshake_loop: Discovering clients");
 
-            let clients = match welcome_socket.recv_all() {
+            let clients = match welcome_socket.recv_all(prefer_horizon_usb) {
                 Ok(clients) => clients,
                 Err(e) => {
                     warn!("mDNS listening error: {e:?}");
@@ -460,7 +473,7 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                         },
                     );
 
-                    if config.auto_trust_clients {
+                    if auto_trust_clients == Some(true) {
                         session_manager.update_client_connections(
                             client_hostname.clone(),
                             ClientConnectionsAction::Trust,
@@ -483,7 +496,12 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                     && let Err(e) = try_connect(
                         Arc::clone(&ctx),
                         Arc::clone(&lifecycle_state),
-                        [(client_ip, client_hostname.clone())].into_iter().collect(),
+                        [(
+                            SocketAddr::new(client_ip, CONTROL_PORT),
+                            client_hostname.clone(),
+                        )]
+                        .into_iter()
+                        .collect(),
                     )
                 {
                     error!("Could not initiate connection for {client_hostname}: {e}");
@@ -509,16 +527,23 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
 fn try_connect(
     ctx: Arc<ConnectionContext>,
     lifecycle_state: Arc<RwLock<LifecycleState>>,
-    mut client_ips: HashMap<IpAddr, String>,
+    mut client_addresses: HashMap<SocketAddr, String>,
 ) -> ConResult {
     dbg_connection!("try_connect: Finding client and creating control socket");
 
-    let (socket, client_ip, connection_result) = alvr_sockets::connect_to_client(
-        client_ips.keys().cloned().collect(),
+    let (socket, client_address, connection_result) = alvr_sockets::connect_to_client(
+        client_addresses.keys().cloned().collect(),
         Duration::from_secs(1),
     )?;
 
-    let Some(client_hostname) = client_ips.remove(&client_ip) else {
+    let client_hostname = client_addresses.remove(&client_address).or_else(|| {
+        let address = client_addresses
+            .keys()
+            .find(|address| address.ip() == client_address.ip())
+            .copied()?;
+        client_addresses.remove(&address)
+    });
+    let Some(client_hostname) = client_hostname else {
         con_bail!("unreachable");
     };
 
@@ -533,7 +558,7 @@ fn try_connect(
                 socket,
                 connection_result,
                 client_hostname.clone(),
-                client_ip,
+                client_address.ip(),
             ) {
                 error!("Handshake error for {client_hostname}: {e}");
             }
@@ -847,7 +872,7 @@ fn connection_pipeline(
             0
         };
 
-    let wired = client_ip.is_loopback();
+    let wired = client_ip.is_loopback() || client_hostname == WIRED_CLIENT_HOSTNAME;
 
     dbg_connection!("connection_pipeline: send streaming config");
     let stream_config_packet = StreamConfigPacket::new(

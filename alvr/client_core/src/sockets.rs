@@ -22,16 +22,23 @@ impl AnnouncerSocket {
             bail!("IP is unspecified");
         }
 
+        let protocol_id = alvr_common::protocol_id();
+        let mut properties = vec![(alvr_sockets::MDNS_PROTOCOL_KEY, protocol_id.as_str())];
+        #[cfg(target_os = "android")]
+        let usb_network = alvr_system_info::is_usb_network_bound();
+        #[cfg(not(target_os = "android"))]
+        let usb_network = false;
+        if usb_network {
+            properties.push((alvr_sockets::MDNS_USB_NETWORK_KEY, "true"));
+        }
+
         self.daemon.register(ServiceInfo::new(
             alvr_sockets::MDNS_SERVICE_TYPE,
             &format!("alvr{}", rand::random::<u16>()),
             &self.hostname,
             local_ip,
             5353,
-            &[(
-                alvr_sockets::MDNS_PROTOCOL_KEY,
-                alvr_common::protocol_id().as_str(),
-            )][..],
+            &properties[..],
         )?)?;
 
         Ok(())
