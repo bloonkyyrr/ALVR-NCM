@@ -497,7 +497,7 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                         Arc::clone(&ctx),
                         Arc::clone(&lifecycle_state),
                         [(
-                            SocketAddr::new(client_ip, CONTROL_PORT),
+                            client_ip,
                             client_hostname.clone(),
                         )]
                         .into_iter()
