@@ -31,7 +31,7 @@ pub fn request_usb_network() -> bool {
             let manager = get_system_service(env, "connectivity")?;
             let builder = env.new_object(
                 jni_str!("android/net/NetworkRequest$Builder"),
-                jni_str!("()V"),
+                jni_sig!("()V"),
                 &[],
             )?;
             let builder = env
@@ -68,14 +68,14 @@ pub fn request_usb_network() -> bool {
                 .l()?;
             let callback = env.new_object(
                 jni_str!("android/net/ConnectivityManager$NetworkCallback"),
-                jni_str!("()V"),
+                jni_sig!("()V"),
                 &[],
             )?;
 
             // Keep the request registered while the app is running. Android retains the callback
             // for the request and delivers the USB network asynchronously.
             env.call_method(
-                manager,
+                &manager,
                 jni_str!("requestNetwork"),
                 jni_sig!("(Landroid/net/NetworkRequest;Landroid/net/ConnectivityManager$NetworkCallback;)V"),
                 &[(&request).into(), (&callback).into()],
@@ -105,7 +105,7 @@ fn bind_available_usb_network() -> bool {
         let manager = get_system_service(env, "connectivity")?;
         let networks = env
             .call_method(
-                manager,
+                &manager,
                 jni_str!("getAllNetworks"),
                 jni_sig!("()[Landroid/net/Network;"),
                 &[],
@@ -136,7 +136,7 @@ fn bind_available_usb_network() -> bool {
             if is_usb {
                 let bound = env
                     .call_method(
-                        manager,
+                        &manager,
                         jni_str!("bindProcessToNetwork"),
                         jni_sig!("(Landroid/net/Network;)Z"),
                         &[(&network).into()],

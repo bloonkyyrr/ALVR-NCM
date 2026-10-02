@@ -1,4 +1,4 @@
-use crate::LOCAL_IP;
+use crate::{CONTROL_PORT, LOCAL_IP};
 use alvr_common::{ConResult, HandleTryAgain, ToCon, anyhow::Result, con_bail};
 use alvr_session::{DscpTos, SocketBufferConfig};
 use bincode::config;
