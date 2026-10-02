@@ -162,7 +162,9 @@ impl SocketConnection {
         stream_config_packet: impl Serialize,
         socket_config: StreamSocketConfig,
     ) -> ConResult<Self> {
-        let client_ip = control_socket.inner.peer_addr().to_con()?.ip();
+        // Keep the IPv6 scope ID: Horizon USB networking uses a link-local address, and
+        // the scope identifies which USB interface should carry the stream connection.
+        let client_address = control_socket.inner.peer_addr().to_con()?;
 
         control_socket.send(&stream_config_packet).to_con()?;
 
@@ -177,7 +179,7 @@ impl SocketConnection {
 
         let stream_socket = StreamSocketBuilder::connect_to_client(
             timeout,
-            client_ip,
+            client_address,
             socket_config.port,
             socket_config.protocol,
             socket_config.dscp,
@@ -197,7 +199,7 @@ impl SocketConnection {
         timeout: Duration,
         socket_config: StreamSocketConfig,
     ) -> ConResult<ServerConnectionResult> {
-        let server_ip = control_socket.inner.peer_addr().to_con()?.ip();
+        let server_address = control_socket.inner.peer_addr().to_con()?;
 
         match control_socket.recv(timeout)? {
             ServerControlPacket::StartStream => (),
@@ -219,7 +221,7 @@ impl SocketConnection {
             .to_con()?;
 
         let stream_socket = stream_socket_builder.accept_from_server(
-            server_ip,
+            server_address,
             socket_config.port,
             socket_config.max_packet_size,
             timeout,

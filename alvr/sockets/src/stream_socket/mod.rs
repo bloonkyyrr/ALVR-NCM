@@ -30,7 +30,7 @@ use std::{
     collections::HashMap,
     marker::PhantomData,
     mem,
-    net::{IpAddr, TcpListener, UdpSocket},
+    net::{SocketAddr, TcpListener, UdpSocket},
     ops::{Deref, DerefMut},
     sync::{Arc, mpsc},
     time::Duration,
@@ -268,18 +268,23 @@ impl StreamSocketBuilder {
 
     pub fn accept_from_server(
         self,
-        server_ip: IpAddr,
+        mut server_address: SocketAddr,
         port: u16,
         max_packet_size: usize,
         timeout: Duration,
     ) -> ConResult<StreamSocket> {
+        server_address.set_port(port);
         let (send_socket, receive_socket) = match self {
             StreamSocketBuilder::Udp(socket) => {
-                udp::connect(&socket, server_ip, port, timeout).to_con()?;
+                udp::connect(&socket, server_address, timeout).to_con()?;
                 udp::split_multiplexed(socket, max_packet_size).to_con()?
             }
             StreamSocketBuilder::Tcp(listener) => {
-                let socket = tcp::accept_from_server(&listener, Some(server_ip), timeout)?;
+                let socket = tcp::accept_from_server(
+                    &listener,
+                    Some(server_address.ip()),
+                    timeout,
+                )?;
                 tcp::split_multiplexed(socket, timeout).to_con()?
             }
         };
@@ -294,21 +299,22 @@ impl StreamSocketBuilder {
     #[allow(clippy::too_many_arguments)]
     pub fn connect_to_client(
         timeout: Duration,
-        client_ip: IpAddr,
+        mut client_address: SocketAddr,
         port: u16,
         protocol: SocketProtocol,
         dscp: Option<DscpTos>,
         buffer_config: SocketBufferConfig,
         max_packet_size: usize,
     ) -> ConResult<StreamSocket> {
+        client_address.set_port(port);
         let (send_socket, receive_socket) = match protocol {
             SocketProtocol::Udp => {
                 let socket = udp::bind(port, dscp, buffer_config).to_con()?;
-                udp::connect(&socket, client_ip, port, timeout).to_con()?;
+                udp::connect(&socket, client_address, timeout).to_con()?;
                 udp::split_multiplexed(socket, max_packet_size).to_con()?
             }
             SocketProtocol::Tcp => {
-                let socket = tcp::connect_to_client(timeout, &[client_ip], port, buffer_config)?;
+                let socket = tcp::connect_to_client(timeout, client_address, buffer_config)?;
                 tcp::split_multiplexed(socket, timeout).to_con()?
             }
         };

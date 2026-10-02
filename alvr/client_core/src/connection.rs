@@ -145,6 +145,13 @@ fn connection_pipeline(
                 return Ok(());
             }
 
+            #[cfg(target_os = "android")]
+            if capabilities.platform.is_quest() {
+                // USB networking may take time to appear after the system consent prompt.
+                // Keep polling so the app binds as soon as Horizon OS brings the link up.
+                alvr_system_info::request_usb_network();
+            }
+
             announcer_socket.announce().ok();
 
             if let Ok(pair) = ProtoControlSocket::connect_to(

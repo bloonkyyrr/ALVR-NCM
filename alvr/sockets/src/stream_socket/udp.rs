@@ -10,7 +10,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     mem::{self, MaybeUninit},
-    net::{IpAddr, UdpSocket},
+    net::{SocketAddr, UdpSocket},
     ptr,
     time::Duration,
 };
@@ -50,8 +50,8 @@ pub fn bind(
     Ok(socket.into())
 }
 
-pub fn connect(socket: &UdpSocket, peer_ip: IpAddr, port: u16, timeout: Duration) -> Result<()> {
-    socket.connect((peer_ip, port))?;
+pub fn connect(socket: &UdpSocket, peer_address: SocketAddr, timeout: Duration) -> Result<()> {
+    socket.connect(peer_address)?;
     socket.set_read_timeout(Some(timeout))?;
 
     Ok(())

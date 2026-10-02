@@ -59,22 +59,12 @@ pub fn accept_from_server(
 
 pub fn connect_to_client(
     timeout: Duration,
-    client_ips: &[IpAddr],
-    port: u16,
+    client_address: SocketAddr,
     buffer_config: SocketBufferConfig,
 ) -> ConResult<TcpStream> {
-    let split_timeout = timeout / client_ips.len() as u32;
-
-    let mut res = alvr_common::try_again();
-    for ip in client_ips {
-        res = TcpStream::connect_timeout(&SocketAddr::new(*ip, port), split_timeout)
-            .handle_try_again();
-
-        if res.is_ok() {
-            break;
-        }
-    }
-    let socket = res?.into();
+    let socket = TcpStream::connect_timeout(&client_address, timeout)
+        .handle_try_again()?
+        .into();
 
     crate::set_socket_buffers(&socket, buffer_config).ok();
     socket.set_read_timeout(Some(timeout)).to_con()?;
