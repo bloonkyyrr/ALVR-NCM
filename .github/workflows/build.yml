@@ -41,40 +41,6 @@ jobs:
           path: ./artifacts/*
 
 
-  build-linux:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: true
-
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install build-essential pkg-config nasm libva-dev libdrm-dev libvulkan-dev libx264-dev libasound2-dev libxrandr-dev libunwind-dev libgtk-3-dev libpipewire-0.3-dev libspa-0.2-dev
-
-      - name: Prepare deps
-        env:
-          RUST_BACKTRACE: 1
-        run: cargo xtask prepare-deps --platform linux
-
-      - name: Build and package ALVR (.tar.gz)
-        env:
-          RUST_BACKTRACE: 1
-        run: |
-          set -e
-          mkdir artifacts/
-          cargo xtask build-streamer --platform linux --ci
-          tar -cJf artifacts/alvr_streamer_linux.tar.xz ./build/alvr_streamer*
-          cargo xtask build-launcher --platform linux --ci
-          tar -cJf artifacts/alvr_launcher_linux.tar.xz ./build/alvr_launcher*
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: Linux packages
-          path: ./artifacts/*
-
   build-android:
     runs-on: ubuntu-latest
     steps:
