@@ -1,5 +1,8 @@
 name: Create release
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -14,6 +17,8 @@ on:
 jobs:
   prepare_release:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     outputs:
       release_ref: ${{ steps.output_ref.outputs.release_ref }}
       version_tag: ${{ steps.bump_version.outputs.version_tag }}
@@ -64,12 +69,20 @@ jobs:
         run: |
           cargo xtask package-streamer --gpl --ci
           cargo xtask package-launcher --ci
+          if (!(Test-Path "build/alvr_streamer_windows.zip")) { throw "Windows streamer package was not produced" }
+          if (!(Test-Path "build/alvr_launcher_windows.zip")) { throw "Windows launcher package was not produced" }
 
-      - name: Upload artifacts
+      - name: Upload Windows streamer
         uses: actions/upload-artifact@v7
         with:
           name: windows-streamer
-          path: ./build/alvr_*.zip
+          path: ./build/alvr_streamer_windows.zip
+
+      - name: Upload Windows launcher
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-launcher
+          path: ./build/alvr_launcher_windows.zip
 
   build_android_client:
     runs-on: ubuntu-latest
@@ -127,6 +140,8 @@ jobs:
 
   publish_release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs:
       [
         prepare_release,
