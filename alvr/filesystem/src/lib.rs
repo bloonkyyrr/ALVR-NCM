@@ -15,17 +15,19 @@ pub fn dynlib_fname(name: &str) -> String {
 }
 
 pub fn target_dir() -> PathBuf {
-    // use `.parent().unwrap()` instead of `../` to maintain canonicalized form
-    Path::new(env!("OUT_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_owned()
+    // `OUT_DIR` is `<target dir>/<profile>/build/<package>/<hash>/out`, but recent versions of
+    // Cargo nest the hash in its own directory, so the number of components is not stable. Walk up
+    // to the `build` directory and return the target dir above the profile directory.
+    let mut path = Path::new(env!("OUT_DIR")).to_owned();
+    while path.file_name().is_none_or(|name| name != "build") {
+        if !path.pop() {
+            break;
+        }
+    }
+
+    path.parent()
+        .map(Path::to_owned)
+        .unwrap_or_else(|| Path::new(env!("OUT_DIR")).to_owned())
 }
 
 pub fn workspace_dir() -> PathBuf {
