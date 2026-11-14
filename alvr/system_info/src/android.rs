@@ -148,7 +148,7 @@ fn bind_available_usb_network() -> bool {
             }
             let is_usb = env
                 .call_method(
-                    capabilities,
+                    &capabilities,
                     jni_str!("hasTransport"),
                     jni_sig!("(I)Z"),
                     &[8.into()], // NetworkCapabilities.TRANSPORT_USB
