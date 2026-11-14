@@ -7,7 +7,6 @@ use crate::{
     statistics::StatisticsManager,
     tracking::{self, TrackingManager},
 };
-use alvr_adb::{WiredConnection, WiredConnectionStatus};
 use alvr_common::{
     AlvrFoveatedEncodingParams, AnyhowToCon, BUTTON_INFO, CONTROLLER_PROFILE_INFO, ConResult,
     ConnectionError, ConnectionState, LifecycleState, QUEST_CONTROLLER_PROFILE_PATH, con_bail,
@@ -18,7 +17,7 @@ use alvr_common::{
     settings_schema::Switch,
     warn,
 };
-use alvr_events::{AdbEvent, ButtonEvent, EventType};
+use alvr_events::{ButtonEvent, EventType};
 use alvr_packets::{
     AUDIO, ClientConnectionResult, ClientConnectionsAction, ClientControlPacket,
     ClientNegotiatedStreamingConfig, ClientStatistics, HAPTICS, NegotiatedStreamingConfigExt,
@@ -36,7 +35,7 @@ use alvr_sockets::{
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     process::Command,
     sync::{Arc, mpsc::RecvTimeoutError},
     thread,
@@ -301,102 +300,16 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
         }
     };
 
-    let mut wired_connection = None;
-
     while *lifecycle_state.read() != LifecycleState::ShuttingDown {
         dbg_connection!("handshake_loop: Try connect to wired device");
 
-        let (wired_mode, wired_entry_enabled) = {
-            let session = SESSION_MANAGER.read();
-            (
-                session.settings().connection.wired_connection_mode,
-                session
-                    .client_list()
-                    .get(WIRED_CLIENT_HOSTNAME)
-                    .is_some_and(|info| info.connection_state == ConnectionState::Disconnected),
-            )
-        };
-
-        let mut wired_client_ips = HashMap::new();
-        if wired_entry_enabled && matches!(wired_mode, alvr_session::WiredConnectionMode::Adb) {
-            // Make sure the wired connection is created once and kept alive
-            let wired_connection = if let Some(connection) = &wired_connection {
-                connection
-            } else {
-                let connection = match WiredConnection::new(
-                    FILESYSTEM_LAYOUT.get().unwrap(),
-                    |downloaded, maybe_total| {
-                        if let Some(total) = maybe_total {
-                            alvr_events::send_event(EventType::Adb(AdbEvent {
-                                download_progress: downloaded as f32 / total as f32,
-                            }));
-                        };
-                    },
-                ) {
-                    Ok(connection) => connection,
-                    Err(e) => {
-                        error!("{e:?}");
-                        thread::sleep(RETRY_CONNECT_MIN_INTERVAL);
-                        continue;
-                    }
-                };
-
-                wired_connection = Some(connection);
-
-                wired_connection.as_ref().unwrap()
-            };
-
-            let stream_port;
-            let client_type;
-            let client_autolaunch;
-            {
-                let session_manager_lock = SESSION_MANAGER.read();
-                let connection = &session_manager_lock.settings().connection;
-                stream_port = connection.stream_port;
-                client_type = connection.wired_client_type.clone();
-                client_autolaunch = connection.wired_client_autolaunch.as_option().cloned();
-            }
-
-            let status = match wired_connection.setup(
-                CONTROL_PORT,
-                stream_port,
-                &client_type,
-                client_autolaunch,
-            ) {
-                Ok(status) => status,
-                Err(e) => {
-                    error!("{e:?}");
-                    thread::sleep(RETRY_CONNECT_MIN_INTERVAL);
-                    continue;
-                }
-            };
-
-            #[cfg_attr(not(debug_assertions), expect(unused_variables))]
-            if let WiredConnectionStatus::NotReady(s) = status {
-                dbg_connection!("handshake_loop: Wired connection not ready: {s}");
-                thread::sleep(RETRY_CONNECT_MIN_INTERVAL);
-                continue;
-            }
-
-            let client_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), CONTROL_PORT);
-            wired_client_ips.insert(client_address, WIRED_CLIENT_HOSTNAME.to_owned());
-        } else {
-            // Dropping the ADB connection kills the ADB server it started. Horizon USB mode
-            // discovers the headset over its native USB network and does not use ADB.
-            wired_connection = None;
-        }
-
-        if !wired_client_ips.is_empty()
-            && try_connect(
-                Arc::clone(&ctx),
-                Arc::clone(&lifecycle_state),
-                wired_client_ips,
-            )
-            .is_ok()
-        {
-            thread::sleep(RETRY_CONNECT_MIN_INTERVAL);
-            continue;
-        }
+        // Wired connections use the USB network that Quest headsets expose over USB NCM. The
+        // headset announces itself over mDNS on that link, so no ports need to be forwarded.
+        let wired_entry_enabled = SESSION_MANAGER
+            .read()
+            .client_list()
+            .get(WIRED_CLIENT_HOSTNAME)
+            .is_some_and(|info| info.connection_state == ConnectionState::Disconnected);
 
         dbg_connection!("handshake_loop: Try connect to manual IPs");
 
@@ -437,16 +350,14 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
             .connection
             .client_discovery
             .clone();
-        let prefer_horizon_usb = wired_entry_enabled
-            && matches!(wired_mode, alvr_session::WiredConnectionMode::HorizonUsb);
         let auto_trust_clients = match discovery_config {
             Switch::Enabled(config) => Some(config.auto_trust_clients),
             Switch::Disabled => None,
         };
-        if auto_trust_clients.is_some() || prefer_horizon_usb {
+        if auto_trust_clients.is_some() || wired_entry_enabled {
             dbg_connection!("handshake_loop: Discovering clients");
 
-            let clients = match welcome_socket.recv_all(prefer_horizon_usb) {
+            let clients = match welcome_socket.recv_all(wired_entry_enabled) {
                 Ok(clients) => clients,
                 Err(e) => {
                     warn!("mDNS listening error: {e:?}");

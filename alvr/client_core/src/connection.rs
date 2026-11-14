@@ -163,8 +163,6 @@ fn connection_pipeline(
             }
         }
     };
-    let server_ip = server_address.ip();
-
     let mut connection_state_lock = ctx.state.write();
     let disconnect_notif = Arc::new(Condvar::new());
 
@@ -269,7 +267,7 @@ fn connection_pipeline(
 
     dbg_connection!("connection_pipeline: accept connection");
     let mut stream_socket = stream_socket_builder.accept_from_server(
-        server_ip,
+        server_address,
         settings.connection.stream_port,
         settings.connection.packet_size as _,
         HANDSHAKE_ACTION_TIMEOUT,

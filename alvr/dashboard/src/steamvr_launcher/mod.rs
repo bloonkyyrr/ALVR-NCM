@@ -4,7 +4,6 @@ mod linux_steamvr;
 mod windows_steamvr;
 
 use crate::data_sources;
-use alvr_adb::commands as adb;
 use alvr_common::{
     anyhow::{Context, Result},
     debug, error,
@@ -128,13 +127,6 @@ pub struct Launcher {
 
 impl Launcher {
     pub fn launch_steamvr(&self) {
-        // The ADB server might be left running because of an unclean termination of SteamVR.
-        // Kill it unconditionally to ensure clean state, regardless of current connection mode.
-        // Note: this will also kill a system-wide ADB server not started by ALVR.
-        if let Some(path) = adb::get_adb_path(&crate::get_filesystem_layout()) {
-            adb::kill_server(&path).ok();
-        }
-
         #[cfg(target_os = "linux")]
         linux_steamvr::linux_hardware_checks();
 

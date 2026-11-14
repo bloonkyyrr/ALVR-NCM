@@ -2,7 +2,6 @@ use alvr_common::{
     ALVR_VERSION, DebugGroupsConfig, DebugGroupsConfigDefault, LogSeverity, LogSeverityDefault,
     LogSeverityDefaultVariant,
 };
-use alvr_system_info::{ClientFlavor, ClientFlavorDefault, ClientFlavorDefaultVariant};
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 use settings_schema::{
@@ -1386,23 +1385,6 @@ pub struct SocketBufferConfig {
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
-pub struct WiredClientAutoLaunchConfig {
-    #[schema(strings(
-        help = "Delay in seconds to wait after booting the headset before trying to launch the client."
-    ))]
-    pub boot_delay: u32,
-}
-
-#[derive(SettingsSchema, Serialize, Deserialize, Clone, Copy, Default)]
-pub enum WiredConnectionMode {
-    /// Use Android Debug Bridge to forward ALVR's ports to the headset.
-    #[default]
-    Adb,
-    /// Use the USB network exposed by Horizon OS 2.5 and newer.
-    HorizonUsb,
-}
-
-#[derive(SettingsSchema, Serialize, Deserialize, Clone)]
 pub struct ConnectionConfig {
     #[schema(strings(
         help = r#"UDP: Faster, but less stable than TCP. Try this if your network is well optimized and free of interference.
@@ -1411,20 +1393,6 @@ TCP: Slower than UDP, but more stable. Pick this if you experience video or audi
     pub stream_protocol: SocketProtocol,
 
     pub client_discovery: Switch<DiscoveryConfig>,
-
-    #[schema(strings(
-        help = r#"Which release type of client should ALVR look for when establishing a wired connection."#
-    ))]
-    pub wired_client_type: ClientFlavor,
-
-    #[schema(strings(
-        help = r#"Wether ALVR should try to automatically launch the client when establishing a wired connection."#
-    ))]
-    pub wired_client_autolaunch: Switch<WiredClientAutoLaunchConfig>,
-
-    #[serde(default)]
-    #[schema(strings(help = "Select ADB port forwarding or Meta Horizon OS 2.5 USB networking for the Wired Connection toggle. USB networking requires a compatible headset and the USB connection permission in headset settings."))]
-    pub wired_connection_mode: WiredConnectionMode,
 
     #[cfg_attr(
         windows,
@@ -2211,21 +2179,6 @@ pub fn session_settings_default() -> SettingsDefault {
                 content: DiscoveryConfigDefault {
                     auto_trust_clients: cfg!(debug_assertions),
                 },
-            },
-            wired_client_type: ClientFlavorDefault {
-                Custom: "alvr.client".to_owned(),
-                variant: if alvr_common::is_stable() {
-                    ClientFlavorDefaultVariant::Store
-                } else {
-                    ClientFlavorDefaultVariant::Github
-                },
-            },
-            wired_client_autolaunch: SwitchDefault {
-                enabled: true,
-                content: WiredClientAutoLaunchConfigDefault { boot_delay: 0 },
-            },
-            wired_connection_mode: WiredConnectionModeDefault {
-                variant: WiredConnectionModeDefaultVariant::Adb,
             },
             web_server_port: 8082,
             stream_port: 9944,

@@ -188,19 +188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alvr_adb"
-version = "21.0.0-dev14"
-dependencies = [
- "alvr_common",
- "alvr_filesystem",
- "alvr_session",
- "alvr_system_info",
- "anyhow",
- "ureq",
- "zip",
-]
-
-[[package]]
 name = "alvr_audio"
 version = "21.0.0-dev14"
 dependencies = [
@@ -288,7 +275,6 @@ dependencies = [
 name = "alvr_dashboard"
 version = "21.0.0-dev14"
 dependencies = [
- "alvr_adb",
  "alvr_audio",
  "alvr_common",
  "alvr_events",
@@ -359,11 +345,9 @@ dependencies = [
 name = "alvr_launcher"
 version = "21.0.0-dev14"
 dependencies = [
- "alvr_adb",
  "alvr_common",
  "alvr_filesystem",
  "alvr_gui_common",
- "alvr_system_info",
  "anyhow",
  "eframe",
  "flate2",
@@ -393,7 +377,6 @@ dependencies = [
 name = "alvr_server_core"
 version = "21.0.0-dev14"
 dependencies = [
- "alvr_adb",
  "alvr_audio",
  "alvr_common",
  "alvr_events",
@@ -457,7 +440,6 @@ version = "21.0.0-dev14"
 dependencies = [
  "alvr_common",
  "alvr_filesystem",
- "alvr_system_info",
  "bytemuck",
  "regex",
  "serde",

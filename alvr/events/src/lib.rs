@@ -71,11 +71,6 @@ pub struct HapticsEvent {
     pub amplitude: f32,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct AdbEvent {
-    pub download_progress: f32,
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "id", content = "data")]
 pub enum EventType {
@@ -89,7 +84,6 @@ pub enum EventType {
     Haptics(HapticsEvent),
     DriversList(Vec<PathBuf>),
     ServerRequestsSelfRestart,
-    Adb(AdbEvent),
     NewVersionFound { version: String, message: String },
 }
 
@@ -117,7 +111,6 @@ impl Event {
             EventType::Haptics(_) => "HAPTICS".to_string(),
             EventType::DriversList(_) => "DRV LIST".to_string(),
             EventType::ServerRequestsSelfRestart => "RESTART".to_string(),
-            EventType::Adb(_) => "ADB".to_string(),
             EventType::NewVersionFound { .. } => "NEW VER".to_string(),
         }
     }
@@ -133,7 +126,6 @@ impl Event {
             EventType::Haptics(haptics) => serde_json::to_string(haptics).unwrap(),
             EventType::DriversList(drivers) => serde_json::to_string(drivers).unwrap(),
             EventType::ServerRequestsSelfRestart => "Request for server restart".into(),
-            EventType::Adb(adb) => serde_json::to_string(adb).unwrap(),
             EventType::NewVersionFound { version, .. } => version.clone(),
         }
     }

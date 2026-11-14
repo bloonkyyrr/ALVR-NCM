@@ -5,7 +5,7 @@ use alvr_packets::ClientConnectionsAction;
 use alvr_session::{ClientConnectionConfig, SessionConfig};
 use alvr_sockets::WIRED_CLIENT_HOSTNAME;
 use eframe::{
-    egui::{self, Frame, Grid, Layout, ProgressBar, RichText, TextEdit, Ui, Window},
+    egui::{self, Frame, Grid, Layout, RichText, TextEdit, Ui, Window},
     emath::{Align, Align2},
     epaint::Color32,
 };
@@ -20,7 +20,6 @@ pub struct DevicesTab {
     new_devices: Option<Vec<(String, ClientConnectionConfig)>>,
     trusted_devices: Option<Vec<(String, ClientConnectionConfig)>>,
     edit_popup_state: Option<EditPopupState>,
-    adb_download_progress: Option<f32>,
 }
 
 impl DevicesTab {
@@ -29,7 +28,6 @@ impl DevicesTab {
             new_devices: None,
             trusted_devices: None,
             edit_popup_state: None,
-            adb_download_progress: None,
         }
     }
 
@@ -43,10 +41,6 @@ impl DevicesTab {
 
         self.trusted_devices = Some(trusted_clients);
         self.new_devices = Some(untrusted_clients);
-    }
-
-    pub fn update_adb_download_progress(&mut self, progress: f32) {
-        self.adb_download_progress = Some(progress);
     }
 
     pub fn ui(&mut self, ui: &mut Ui, connected_to_server: bool) -> Vec<ServerRequest> {
@@ -91,7 +85,6 @@ impl DevicesTab {
                     clients
                         .iter()
                         .find(|(hostname, _)| hostname == WIRED_CLIENT_HOSTNAME),
-                    self.adb_download_progress,
                 )
             {
                 requests.push(request);
@@ -189,7 +182,6 @@ impl DevicesTab {
 fn wired_client_section(
     ui: &mut Ui,
     maybe_client: Option<&(String, ClientConnectionConfig)>,
-    adb_download_progress: Option<f32>,
 ) -> Option<ServerRequest> {
     let mut request = None;
 
@@ -231,15 +223,7 @@ fn wired_client_section(
                         });
                         ui.end_row();
 
-                        if let Some(progress) = adb_download_progress.filter(|p| *p < 1.0) {
-                            ui.horizontal(|ui| {
-                                ui.label("ADB download progress");
-                            });
-                            ui.horizontal(|ui| {
-                                ui.add(ProgressBar::new(progress).animate(true).show_percentage());
-                            });
-                            ui.end_row();
-                        } else if let Some((_, data)) = maybe_client {
+                        if let Some((_, data)) = maybe_client {
                             ui.horizontal(|ui| {
                                 ui.label(&data.display_name);
                             });

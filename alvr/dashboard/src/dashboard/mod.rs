@@ -181,9 +181,6 @@ impl eframe::App for Dashboard {
                 EventType::ServerRequestsSelfRestart => self.restart_steamvr(&mut requests),
                 #[cfg(not(target_arch = "wasm32"))]
                 EventType::DriversList(list) => self.installation_tab.update_drivers(list),
-                EventType::Adb(adb_event) => self
-                    .connections_tab
-                    .update_adb_download_progress(adb_event.download_progress),
                 EventType::NewVersionFound { version, message } => {
                     self.new_version_popup = Some(NewVersionPopup::new(version, message));
                 }

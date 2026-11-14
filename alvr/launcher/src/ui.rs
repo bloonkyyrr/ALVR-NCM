@@ -326,36 +326,6 @@ impl eframe::App for Launcher {
                                                 open::that_in_background(path);
                                             }
 
-                                            let release_info = self
-                                                .release_channels_info
-                                                .as_ref()
-                                                .and_then(|info| {
-                                                    actions::get_release(
-                                                        info,
-                                                        &installation.version,
-                                                    )
-                                                });
-                                            if ui
-                                                .add_enabled(
-                                                    release_info.is_some()
-                                                        || installation.is_apk_downloaded,
-                                                    Button::new("Install APK"),
-                                                )
-                                                .clicked()
-                                            {
-                                                if let Some(release_info) = release_info {
-                                                    self.ui_message_sender
-                                                        .send(UiMessage::InstallClient(
-                                                            release_info,
-                                                        ))
-                                                        .ok();
-                                                } else {
-                                                    self.state = State::Error(
-                                                        "Failed to get release info".into(),
-                                                    );
-                                                }
-                                            };
-
                                             if ui.button("Launch").clicked() {
                                                 match actions::launch_dashboard(
                                                     &installation.version,

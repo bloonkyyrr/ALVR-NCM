@@ -101,17 +101,6 @@ xdg-icon-resource install --size 256 alvr_icon.png application-alvr-launcher
 
 The shortcut may not appear until desktop session is refreshed (e.g. log off then back on)
 
-### EXPERIMENTAL - APK install via flatpak launcher 
-First need to setup adb on host, and enable usb debugging on device. Verify that devices shows up when you run "adb devices" and is authorised.
-Script assumes that user has AndroidStudio installed with keys in default location ($HOME/.android/adbkey.pub) - change if necessary
-Convenience script is provided in git: run_with_adb_keys.sh
-It's likely one the keys are exposed to the flatpak in the default location it will work without needing more changes.
-```
-export ADB_VENDOR_KEYS=~/.android/adbkey.pub
-flatpak override --user --filesystem=~/.android com.valvesoftware.Steam.Utility.alvr
-flatpak run --env=ADB_VENDOR_KEYS=$ADB_VENDOR_KEYS --command=alvr_launcher com.valvesoftware.Steam
-```
-
 ### Wayland variable causes steamvr error:
 Make sure the QT_QPA_PLATFORM var allows x11 option - or steamvr freaks out. Launch from terminal to see errors.
 This can be a problem if you have modified this variable globally to force usage of wayland for some program like GameScope. 
