@@ -1,4 +1,4 @@
-use alvr_common::warn;
+use alvr_common::{info, parking_lot::Mutex, warn};
 use jni::{
     Env, JavaVM,
     errors::Result as JniResult,
@@ -12,21 +12,36 @@ use std::{
     ffi::CStr,
     net::{IpAddr, Ipv4Addr},
     sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
 };
 
 pub const MICROPHONE_PERMISSION: &str = "android.permission.RECORD_AUDIO";
 
+const USB_NETWORK_RETRY_INTERVAL: Duration = Duration::from_secs(10);
+// Meta reports the negotiated USB speed as the NCM network's link bandwidth. Anything below this
+// is a USB 2 cable or port, which cannot carry a high bitrate stream.
+const USB3_MIN_LINK_KBPS: i32 = 1_000_000;
+
 static USB_NETWORK_REQUESTED: AtomicBool = AtomicBool::new(false);
 static USB_NETWORK_BOUND: AtomicBool = AtomicBool::new(false);
+static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Request Horizon OS's USB NCM network and bind ALVR's process to it when available.
 /// This is intentionally best-effort: unsupported devices continue using Wi-Fi.
 pub fn request_usb_network() -> bool {
-    if USB_NETWORK_BOUND.load(Ordering::Relaxed) {
+    // Also re-check the link while bound, so that unplugging the cable falls back to Wi-Fi.
+    if USB_NETWORK_BOUND.load(Ordering::Relaxed) && usb_network_ip().is_some() {
         return true;
     }
 
-    if !USB_NETWORK_REQUESTED.load(Ordering::Relaxed) {
+    // The system releases the request when the user denies the consent dialog (the callback then
+    // gets onUnavailable) and when the cable is unplugged, so ask again after a delay instead of
+    // giving up on USB networking for the rest of the session.
+    let last_request = *LAST_REQUEST.lock();
+    let request_due = !USB_NETWORK_REQUESTED.load(Ordering::Relaxed)
+        || last_request.is_none_or(|last| last.elapsed() > USB_NETWORK_RETRY_INTERVAL);
+
+    if request_due {
         let result = vm().attach_current_thread(|env| {
             let manager = get_system_service(env, "connectivity")?;
             let builder = env.new_object(
@@ -83,12 +98,18 @@ pub fn request_usb_network() -> bool {
             JniResult::Ok(())
         });
 
-        if let Err(error) = result {
-            warn!("Could not request Horizon USB networking: {error}");
-            USB_NETWORK_REQUESTED.store(true, Ordering::Relaxed);
-            return false;
+        match result {
+            Ok(()) => {
+                *LAST_REQUEST.lock() = Some(Instant::now());
+                USB_NETWORK_REQUESTED.store(true, Ordering::Relaxed);
+            }
+            Err(error) => {
+                warn!("Could not request Horizon USB networking: {error}");
+                // Retry on a later poll instead of disabling USB networking for the session.
+                USB_NETWORK_REQUESTED.store(false, Ordering::Relaxed);
+                return false;
+            }
         }
-        USB_NETWORK_REQUESTED.store(true, Ordering::Relaxed);
     }
 
     // requestNetwork is asynchronous. The connection retry loop polls for the USB network, so
@@ -143,19 +164,49 @@ fn bind_available_usb_network() -> bool {
                     )?
                     .z()?;
                 if bound {
-                    USB_NETWORK_BOUND.store(true, Ordering::Relaxed);
-                    return JniResult::Ok(true);
+                    // The NCM link bandwidth is the negotiated USB speed, which tells a USB 2
+                    // cable or port from a USB 3 one.
+                    let link_kbps = env
+                        .call_method(
+                            &capabilities,
+                            jni_str!("getLinkDownstreamBandwidthKbps"),
+                            jni_sig!("()I"),
+                            &[],
+                        )?
+                        .i()?;
+
+                    return JniResult::Ok(Some(link_kbps));
                 }
             }
         }
 
-        JniResult::Ok(false)
+        JniResult::Ok(None)
     });
 
     match result {
-        Ok(bound) => bound,
+        Ok(Some(link_kbps)) => {
+            if !USB_NETWORK_BOUND.swap(true, Ordering::Relaxed) {
+                info!("Bound ALVR to the Horizon USB network");
+
+                if link_kbps > 0 && link_kbps < USB3_MIN_LINK_KBPS {
+                    warn!(
+                        "USB link negotiated at {link_kbps} Kbps (USB 2). Use a USB 3 cable and port for high bitrate streaming"
+                    );
+                }
+            }
+
+            true
+        }
+        Ok(None) => {
+            // The cable was unplugged or the link went down. Advertising falls back to Wi-Fi.
+            USB_NETWORK_BOUND.store(false, Ordering::Relaxed);
+
+            false
+        }
         Err(error) => {
             warn!("Could not bind ALVR to Horizon USB networking: {error}");
+            USB_NETWORK_BOUND.store(false, Ordering::Relaxed);
+
             false
         }
     }

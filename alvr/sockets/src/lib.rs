@@ -5,17 +5,16 @@ use alvr_common::{AnyhowToCon, ConResult, ToCon, anyhow::Result, con_bail, info}
 use alvr_packets::{ClientControlPacket, ServerControlPacket};
 use alvr_session::{DscpTos, SocketBufferConfig, SocketBufferSize, SocketProtocol};
 use serde::{Serialize, de::DeserializeOwned};
-use socket2::Socket;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     marker::PhantomData,
-    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
+    net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener, UdpSocket},
     time::Duration,
 };
 
 pub use control_socket::*;
 pub use stream_socket::*;
 
-pub const LOCAL_IP: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 pub const CONTROL_PORT: u16 = 9943;
 pub const HANDSHAKE_PACKET_SIZE_BYTES: usize = 56; // this may change in future protocols
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(500);
@@ -27,6 +26,28 @@ pub const MDNS_DEVICE_ID_KEY: &str = "device_id";
 pub const MDNS_USB_NETWORK_KEY: &str = "usb_network";
 
 pub const WIRED_CLIENT_HOSTNAME: &str = "client.wired";
+
+// Quest headsets expose their USB connection as an IPv6 link-local network (USB NCM), so wildcard
+// listeners are bound dual-stack. An IPv4-only listener would never accept a wired client.
+const WILDCARD_IP: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+
+pub(crate) fn bind_tcp_listener(port: u16) -> Result<TcpListener> {
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_only_v6(false)?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&SocketAddr::new(WILDCARD_IP, port).into())?;
+    socket.listen(128)?;
+
+    Ok(socket.into())
+}
+
+pub(crate) fn bind_udp_socket(port: u16) -> Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_only_v6(false)?;
+    socket.bind(&SocketAddr::new(WILDCARD_IP, port).into())?;
+
+    Ok(socket.into())
+}
 
 fn set_socket_buffers(socket: &socket2::Socket, buffer_config: SocketBufferConfig) -> Result<()> {
     info!(

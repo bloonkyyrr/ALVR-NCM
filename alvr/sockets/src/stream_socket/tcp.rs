@@ -1,7 +1,6 @@
 use super::{
     MultiplexedSocketReader, MultiplexedSocketWriter, ReconstructedPacket, StreamRecvQueues,
 };
-use crate::LOCAL_IP;
 use alvr_common::{ConResult, HandleTryAgain, ToCon, anyhow::Result, con_bail};
 use alvr_session::{DscpTos, SocketBufferConfig};
 use socket2::Socket;
@@ -23,7 +22,7 @@ pub fn bind(
     dscp: Option<DscpTos>,
     buffer_config: SocketBufferConfig,
 ) -> Result<TcpListener> {
-    let socket = TcpListener::bind((LOCAL_IP, port))?.into();
+    let socket = crate::bind_tcp_listener(port)?.into();
 
     crate::set_socket_buffers(&socket, buffer_config).ok();
 

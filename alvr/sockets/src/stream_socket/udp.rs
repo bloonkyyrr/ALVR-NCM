@@ -1,7 +1,6 @@
 use super::{
     MultiplexedSocketReader, MultiplexedSocketWriter, ReconstructedPacket, StreamRecvQueues,
 };
-use crate::LOCAL_IP;
 use alvr_common::{ConResult, HandleTryAgain, ToCon, anyhow::Result};
 use alvr_session::{DscpTos, SocketBufferConfig};
 use socket2::{MaybeUninitSlice, Socket};
@@ -42,7 +41,7 @@ pub fn bind(
     dscp: Option<DscpTos>,
     buffer_config: SocketBufferConfig,
 ) -> Result<UdpSocket> {
-    let socket = UdpSocket::bind((LOCAL_IP, port))?.into();
+    let socket = crate::bind_udp_socket(port)?.into();
 
     crate::set_socket_buffers(&socket, buffer_config).ok();
     crate::set_dscp(&socket, dscp);
