@@ -11,7 +11,7 @@ use jni::{
 use std::{
     ffi::CStr,
     net::{IpAddr, Ipv4Addr},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
     time::{Duration, Instant},
 };
 
@@ -24,6 +24,7 @@ const USB3_MIN_LINK_KBPS: i32 = 1_000_000;
 
 static USB_NETWORK_REQUESTED: AtomicBool = AtomicBool::new(false);
 static USB_NETWORK_BOUND: AtomicBool = AtomicBool::new(false);
+static USB_LINK_KBPS: AtomicI32 = AtomicI32::new(0);
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Request Horizon OS's USB NCM network and bind ALVR's process to it when available.
@@ -121,6 +122,17 @@ pub fn is_usb_network_bound() -> bool {
     USB_NETWORK_BOUND.load(Ordering::Relaxed)
 }
 
+/// Negotiated speed of the USB NCM link, in Kbps. Used to warn about USB 2 cables.
+pub fn usb_link_speed_kbps() -> Option<u32> {
+    if !USB_NETWORK_BOUND.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let link_kbps = USB_LINK_KBPS.load(Ordering::Relaxed);
+
+    (link_kbps > 0).then_some(link_kbps as u32)
+}
+
 fn bind_available_usb_network() -> bool {
     let result = vm().attach_current_thread(|env| {
         let manager = get_system_service(env, "connectivity")?;
@@ -185,6 +197,8 @@ fn bind_available_usb_network() -> bool {
 
     match result {
         Ok(Some(link_kbps)) => {
+            USB_LINK_KBPS.store(link_kbps, Ordering::Relaxed);
+
             if !USB_NETWORK_BOUND.swap(true, Ordering::Relaxed) {
                 info!("Bound ALVR to the Horizon USB network");
 

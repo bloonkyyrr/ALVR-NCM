@@ -1,9 +1,13 @@
-use alvr_common::anyhow::{Result, bail};
+use alvr_common::{
+    anyhow::{Result, bail},
+    parking_lot::Mutex,
+};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 
 pub struct AnnouncerSocket {
     hostname: String,
     daemon: ServiceDaemon,
+    last_fullname: Mutex<Option<String>>,
 }
 
 impl AnnouncerSocket {
@@ -13,6 +17,7 @@ impl AnnouncerSocket {
         Ok(Self {
             daemon,
             hostname: hostname.to_owned(),
+            last_fullname: Mutex::new(None),
         })
     }
 
@@ -32,14 +37,26 @@ impl AnnouncerSocket {
             properties.push((alvr_sockets::MDNS_USB_NETWORK_KEY, "true"));
         }
 
-        self.daemon.register(ServiceInfo::new(
+        let service_info = ServiceInfo::new(
             alvr_sockets::MDNS_SERVICE_TYPE,
             &format!("alvr{}", rand::random::<u16>()),
             &self.hostname,
             local_ip,
             5353,
             &properties[..],
-        )?)?;
+        )?;
+        let fullname = service_info.get_fullname().to_owned();
+
+        let mut last_fullname = self.last_fullname.lock();
+
+        // Replace the previous announcement. Otherwise the server keeps resolving the address of
+        // the link the client was on before, such as Wi-Fi before the USB network came up.
+        if let Some(previous_fullname) = last_fullname.take() {
+            self.daemon.unregister(&previous_fullname).ok();
+        }
+
+        self.daemon.register(service_info)?;
+        *last_fullname = Some(fullname);
 
         Ok(())
     }

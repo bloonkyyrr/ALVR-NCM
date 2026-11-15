@@ -69,9 +69,28 @@ pub struct ConnectionContext {
     pub max_prediction: RwLock<Duration>,
 }
 
+// Meta reports ~480,000 Kbps for USB 2 and ~5,120,000 Kbps for USB 3.
+#[cfg(target_os = "android")]
+const USB3_MIN_LINK_KBPS: u32 = 1_000_000;
+
 fn set_hud_message(event_queue: &Mutex<VecDeque<ClientCoreEvent>>, message: &str) {
+    #[cfg(target_os = "android")]
+    let usb_status = if alvr_system_info::is_usb_network_bound() {
+        match alvr_system_info::usb_link_speed_kbps() {
+            Some(kbps) if kbps < USB3_MIN_LINK_KBPS => {
+                format!("USB network: {} Mbps (USB 2 cable, use USB 3)", kbps / 1000)
+            }
+            Some(kbps) => format!("USB network: {:.1} Gbps", kbps as f64 / 1_000_000.0),
+            None => "USB network: connected".to_owned(),
+        }
+    } else {
+        "USB network: not connected".to_owned()
+    };
+    #[cfg(not(target_os = "android"))]
+    let usb_status = String::new();
+
     let message = format!(
-        "ALVR v{}\nhostname: {}\nIP: {}\n\n{message}",
+        "ALVR v{}\nhostname: {}\nIP: {}\n{usb_status}\n\n{message}",
         *ALVR_VERSION,
         Config::load().hostname,
         alvr_system_info::local_ip(),
