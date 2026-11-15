@@ -58,8 +58,6 @@ opengles_version = [3, 2]
 required = true
 
 [[package.metadata.android.uses_permission]]
-name = "android.permission.ACCESS_WIFI_STATE"
-[[package.metadata.android.uses_permission]]
 name = "android.permission.ACCESS_NETWORK_STATE"
 [[package.metadata.android.uses_permission]]
 name = "android.permission.CHANGE_NETWORK_STATE"
@@ -69,8 +67,6 @@ name = "android.permission.CHANGE_WIFI_MULTICAST_STATE"
 name = "android.permission.INTERNET"
 [[package.metadata.android.uses_permission]]
 name = "android.permission.RECORD_AUDIO"
-# WAKE_LOCK is needed for proper wifi locking
-# https://developer.android.com/reference/android/net/wifi/WifiManager.WifiLock
 [[package.metadata.android.uses_permission]]
 name = "android.permission.WAKE_LOCK"
 [[package.metadata.android.uses_permission]]

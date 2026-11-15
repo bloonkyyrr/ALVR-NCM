@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn wifi_discovery_keeps_the_announced_hostname() {
+    fn discovery_keeps_the_announced_hostname() {
         let addresses = announced(&[CLIENT_IP]);
         let (hostname, _) = client_entry("quest-headset", true, addresses, false).unwrap();
 

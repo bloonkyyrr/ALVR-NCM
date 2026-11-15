@@ -105,7 +105,6 @@ impl ClientCoreContext {
             let mut permissions = additional_permissions;
             permissions.push(alvr_system_info::MICROPHONE_PERMISSION);
             alvr_system_info::try_get_permissions(&permissions);
-            alvr_system_info::set_wifi_lock(true);
         }
 
         let platform = capabilities.platform;
@@ -341,7 +340,5 @@ impl Drop for ClientCoreContext {
             thread.join().ok();
         }
 
-        #[cfg(target_os = "android")]
-        alvr_system_info::set_wifi_lock(false);
     }
 }
