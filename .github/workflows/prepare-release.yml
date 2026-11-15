@@ -68,7 +68,9 @@ jobs:
           RUST_BACKTRACE: 1
         run: |
           cargo xtask package-streamer --gpl --ci
+          if ($LASTEXITCODE -ne 0) { throw "cargo xtask package-streamer failed" }
           cargo xtask package-launcher --ci
+          if ($LASTEXITCODE -ne 0) { throw "cargo xtask package-launcher failed" }
           if (!(Test-Path "build/alvr_streamer_windows.zip")) { throw "Windows streamer package was not produced" }
           if (!(Test-Path "build/alvr_launcher_windows.zip")) { throw "Windows launcher package was not produced" }
 
