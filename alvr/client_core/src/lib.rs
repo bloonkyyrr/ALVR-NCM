@@ -112,6 +112,14 @@ impl ClientCoreContext {
 
         let lifecycle_state = Arc::new(RwLock::new(LifecycleState::Idle));
         let event_queue = Arc::new(Mutex::new(VecDeque::new()));
+
+        // The USB network request and its HUD status must not depend on the connection loop, which
+        // idles while the headset is not worn.
+        #[cfg(target_os = "android")]
+        if platform.is_quest() {
+            let event_queue = Arc::clone(&event_queue);
+            thread::spawn(move || connection::usb_network_monitor_loop(event_queue));
+        }
         let connection_context = Arc::new(ConnectionContext::default());
         let connection_thread = thread::spawn({
             let lifecycle_state = Arc::clone(&lifecycle_state);

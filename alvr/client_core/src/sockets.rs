@@ -3,11 +3,19 @@ use alvr_common::{
     parking_lot::Mutex,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
+use std::net::IpAddr;
+
+#[derive(Default)]
+struct Announcement {
+    local_ip: Option<IpAddr>,
+    usb_network: bool,
+    fullname: Option<String>,
+}
 
 pub struct AnnouncerSocket {
     hostname: String,
     daemon: ServiceDaemon,
-    last_fullname: Mutex<Option<String>>,
+    announcement: Mutex<Announcement>,
 }
 
 impl AnnouncerSocket {
@@ -17,7 +25,7 @@ impl AnnouncerSocket {
         Ok(Self {
             daemon,
             hostname: hostname.to_owned(),
-            last_fullname: Mutex::new(None),
+            announcement: Mutex::new(Announcement::default()),
         })
     }
 
@@ -27,12 +35,22 @@ impl AnnouncerSocket {
             bail!("IP is unspecified");
         }
 
-        let protocol_id = alvr_common::protocol_id();
-        let mut properties = vec![(alvr_sockets::MDNS_PROTOCOL_KEY, protocol_id.as_str())];
         #[cfg(target_os = "android")]
         let usb_network = alvr_system_info::is_usb_network_bound();
         #[cfg(not(target_os = "android"))]
         let usb_network = false;
+
+        let mut announcement = self.announcement.lock();
+
+        // The connection loop announces repeatedly. Re-registering identical records would drop
+        // and recreate the entry the server is resolving, so only publish changed announcements,
+        // such as when the headset moves from Wi-Fi to the USB network.
+        if announcement.local_ip == Some(local_ip) && announcement.usb_network == usb_network {
+            return Ok(());
+        }
+
+        let protocol_id = alvr_common::protocol_id();
+        let mut properties = vec![(alvr_sockets::MDNS_PROTOCOL_KEY, protocol_id.as_str())];
         if usb_network {
             properties.push((alvr_sockets::MDNS_USB_NETWORK_KEY, "true"));
         }
@@ -47,16 +65,19 @@ impl AnnouncerSocket {
         )?;
         let fullname = service_info.get_fullname().to_owned();
 
-        let mut last_fullname = self.last_fullname.lock();
-
         // Replace the previous announcement. Otherwise the server keeps resolving the address of
         // the link the client was on before, such as Wi-Fi before the USB network came up.
-        if let Some(previous_fullname) = last_fullname.take() {
+        if let Some(previous_fullname) = announcement.fullname.take() {
             self.daemon.unregister(&previous_fullname).ok();
         }
 
         self.daemon.register(service_info)?;
-        *last_fullname = Some(fullname);
+
+        *announcement = Announcement {
+            local_ip: Some(local_ip),
+            usb_network,
+            fullname: Some(fullname),
+        };
 
         Ok(())
     }

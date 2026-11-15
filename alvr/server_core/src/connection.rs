@@ -372,7 +372,7 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                 continue;
             }
 
-            for (client_hostname, client_ip) in clients {
+            for (client_hostname, client_addresses) in clients {
                 let trusted = {
                     let mut session_manager = SESSION_MANAGER.write();
 
@@ -397,6 +397,13 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                         .is_some_and(|c| c.trusted)
                 };
 
+                // Try every announced address (for example each scope of the USB link-local
+                // address or the Wi-Fi address) instead of only the first one that was resolved.
+                let client_addresses = client_addresses
+                    .into_iter()
+                    .map(|address| (address, client_hostname.clone()))
+                    .collect::<HashMap<_, _>>();
+
                 // do not attempt connection if the client is already connected
                 if trusted
                     && SESSION_MANAGER
@@ -407,12 +414,7 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                     && let Err(e) = try_connect(
                         Arc::clone(&ctx),
                         Arc::clone(&lifecycle_state),
-                        [(
-                            client_ip,
-                            client_hostname.clone(),
-                        )]
-                        .into_iter()
-                        .collect(),
+                        client_addresses,
                     )
                 {
                     error!("Could not initiate connection for {client_hostname}: {e}");

@@ -73,7 +73,13 @@ pub struct ConnectionContext {
 #[cfg(target_os = "android")]
 const USB3_MIN_LINK_KBPS: u32 = 1_000_000;
 
-fn set_hud_message(event_queue: &Mutex<VecDeque<ClientCoreEvent>>, message: &str) {
+const USB_NETWORK_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+// Last HUD text without the status header. Kept so the USB monitor can redraw the waiting screen
+// when the cable link comes up or goes away.
+static LAST_HUD_MESSAGE: Mutex<String> = Mutex::new(String::new());
+
+fn hud_message_text(message: &str) -> String {
     #[cfg(target_os = "android")]
     let usb_status = if alvr_system_info::is_usb_network_bound() {
         match alvr_system_info::usb_link_speed_kbps() {
@@ -83,6 +89,8 @@ fn set_hud_message(event_queue: &Mutex<VecDeque<ClientCoreEvent>>, message: &str
             Some(kbps) => format!("USB network: {:.1} Gbps", kbps as f64 / 1_000_000.0),
             None => "USB network: connected".to_owned(),
         }
+    } else if alvr_system_info::is_usb_network_requested() {
+        "USB network: waiting for consent or the USB link".to_owned()
     } else {
         "USB network: not connected".to_owned()
     };
@@ -96,9 +104,48 @@ fn set_hud_message(event_queue: &Mutex<VecDeque<ClientCoreEvent>>, message: &str
         alvr_system_info::local_ip(),
     );
 
+    message
+}
+
+fn set_hud_message(event_queue: &Mutex<VecDeque<ClientCoreEvent>>, message: &str) {
+    *LAST_HUD_MESSAGE.lock() = message.to_owned();
+
+    push_hud_message(event_queue, message);
+}
+
+fn push_hud_message(event_queue: &Mutex<VecDeque<ClientCoreEvent>>, message: &str) {
     event_queue
         .lock()
-        .push_back(ClientCoreEvent::UpdateHudMessage(message));
+        .push_back(ClientCoreEvent::UpdateHudMessage(hud_message_text(message)));
+}
+
+/// Requests the Horizon USB network and keeps the HUD status in sync with it. This runs
+/// independently of the connection loop, which sleeps while the headset is not being worn, so the
+/// consent prompt is requested as soon as the app starts and the status is never stale.
+#[cfg(target_os = "android")]
+pub fn usb_network_monitor_loop(event_queue: Arc<Mutex<VecDeque<ClientCoreEvent>>>) {
+    let mut last_state = None;
+
+    loop {
+        alvr_system_info::request_usb_network();
+
+        let state = (
+            alvr_system_info::is_usb_network_bound(),
+            alvr_system_info::usb_link_speed_kbps(),
+            alvr_system_info::is_usb_network_requested(),
+        );
+
+        if last_state != Some(state) {
+            last_state = Some(state);
+
+            let message = LAST_HUD_MESSAGE.lock().clone();
+            if !message.is_empty() {
+                push_hud_message(&event_queue, &message);
+            }
+        }
+
+        thread::sleep(USB_NETWORK_POLL_INTERVAL);
+    }
 }
 
 fn is_streaming(ctx: &ConnectionContext) -> bool {
@@ -162,13 +209,6 @@ fn connection_pipeline(
         loop {
             if *lifecycle_state.write() != LifecycleState::Resumed {
                 return Ok(());
-            }
-
-            #[cfg(target_os = "android")]
-            if capabilities.platform.is_quest() {
-                // USB networking may take time to appear after the system consent prompt.
-                // Keep polling so the app binds as soon as Horizon OS brings the link up.
-                alvr_system_info::request_usb_network();
             }
 
             announcer_socket.announce().ok();

@@ -1,4 +1,4 @@
-use alvr_common::{info, parking_lot::Mutex, warn};
+use alvr_common::{debug, info, parking_lot::Mutex, warn};
 use jni::{
     Env, JavaVM,
     errors::Result as JniResult,
@@ -71,7 +71,11 @@ pub fn request_usb_network() -> bool {
                     builder,
                     jni_str!("removeCapability"),
                     jni_sig!("(I)Landroid/net/NetworkRequest$Builder;"),
-                    &[13.into()], // NET_CAPABILITY_TRUSTED
+                    // NET_CAPABILITY_TRUSTED. The USB link is local-only, so a request that keeps
+                    // the default capabilities never matches. Removing NOT_RESTRICTED (13) instead
+                    // would make this a restricted network request, which ConnectivityService
+                    // rejects for third-party apps.
+                    &[14.into()],
                 )?
                 .l()?;
             let request = env
@@ -103,10 +107,13 @@ pub fn request_usb_network() -> bool {
             Ok(()) => {
                 *LAST_REQUEST.lock() = Some(Instant::now());
                 USB_NETWORK_REQUESTED.store(true, Ordering::Relaxed);
+                info!("Requested the Horizon USB network (waiting for consent and the cable link)");
             }
             Err(error) => {
                 warn!("Could not request Horizon USB networking: {error}");
-                // Retry on a later poll instead of disabling USB networking for the session.
+                // Retry later instead of disabling USB networking for the session. The timestamp
+                // also keeps a failing request from being retried on every poll.
+                *LAST_REQUEST.lock() = Some(Instant::now());
                 USB_NETWORK_REQUESTED.store(false, Ordering::Relaxed);
                 return false;
             }
@@ -120,6 +127,12 @@ pub fn request_usb_network() -> bool {
 
 pub fn is_usb_network_bound() -> bool {
     USB_NETWORK_BOUND.load(Ordering::Relaxed)
+}
+
+/// Whether the USB network was requested. When it is still pending, the headset is waiting for
+/// the consent dialog, the cable, or a link the current request can use.
+pub fn is_usb_network_requested() -> bool {
+    USB_NETWORK_REQUESTED.load(Ordering::Relaxed)
 }
 
 /// Negotiated speed of the USB NCM link, in Kbps. Used to warn about USB 2 cables.
@@ -158,15 +171,24 @@ fn bind_available_usb_network() -> bool {
             if capabilities.is_null() {
                 continue;
             }
-            let is_usb = env
-                .call_method(
-                    &capabilities,
-                    jni_str!("hasTransport"),
-                    jni_sig!("(I)Z"),
-                    &[8.into()], // NetworkCapabilities.TRANSPORT_USB
-                )?
-                .z()?;
-            if is_usb {
+
+            let transports = network_transports(env, &capabilities)?;
+            let interface_name = network_interface_name(env, &manager, &network)?
+                .unwrap_or_else(|| "unknown".to_owned());
+
+            debug!(
+                "Network {interface_name}: transports: {}",
+                transports.join(", ")
+            );
+
+            // Horizon OS reports the USB link as TRANSPORT_USB. Some builds only surface the NCM
+            // gadget as an Ethernet network, and older ones do not report TRANSPORT_USB at all, so
+            // also accept an Ethernet network or the gadget's usual interface name.
+            let is_wired_link = transports.contains(&"usb")
+                || transports.contains(&"ethernet")
+                || interface_name.starts_with("usb");
+
+            if is_wired_link {
                 let bound = env
                     .call_method(
                         &manager,
@@ -187,7 +209,7 @@ fn bind_available_usb_network() -> bool {
                         )?
                         .i()?;
 
-                    return JniResult::Ok(Some(link_kbps));
+                    return JniResult::Ok(Some((interface_name, link_kbps)));
                 }
             }
         }
@@ -196,11 +218,13 @@ fn bind_available_usb_network() -> bool {
     });
 
     match result {
-        Ok(Some(link_kbps)) => {
+        Ok(Some((interface_name, link_kbps))) => {
             USB_LINK_KBPS.store(link_kbps, Ordering::Relaxed);
 
             if !USB_NETWORK_BOUND.swap(true, Ordering::Relaxed) {
-                info!("Bound ALVR to the Horizon USB network");
+                info!(
+                    "Bound ALVR to the Horizon USB network {interface_name} ({link_kbps} Kbps)"
+                );
 
                 if link_kbps > 0 && link_kbps < USB3_MIN_LINK_KBPS {
                     warn!(
@@ -224,6 +248,72 @@ fn bind_available_usb_network() -> bool {
             false
         }
     }
+}
+
+fn network_transports<'a>(
+    env: &mut Env<'a>,
+    capabilities: &JObject<'a>,
+) -> JniResult<Vec<&'static str>> {
+    // NetworkCapabilities.TRANSPORT_* values. USB was added in API 31.
+    const TRANSPORTS: [(i32, &str); 6] = [
+        (0, "cellular"),
+        (1, "wifi"),
+        (2, "bluetooth"),
+        (3, "ethernet"),
+        (4, "vpn"),
+        (8, "usb"),
+    ];
+
+    let mut names = Vec::new();
+    for (transport, name) in TRANSPORTS {
+        let has_transport = env
+            .call_method(
+                capabilities,
+                jni_str!("hasTransport"),
+                jni_sig!("(I)Z"),
+                &[transport.into()],
+            )?
+            .z()?;
+        if has_transport {
+            names.push(name);
+        }
+    }
+
+    JniResult::Ok(names)
+}
+
+fn network_interface_name<'a>(
+    env: &mut Env<'a>,
+    manager: &JObject<'a>,
+    network: &JObject<'a>,
+) -> JniResult<Option<String>> {
+    let properties = env
+        .call_method(
+            manager,
+            jni_str!("getLinkProperties"),
+            jni_sig!("(Landroid/net/Network;)Landroid/net/LinkProperties;"),
+            &[network.into()],
+        )?
+        .l()?;
+    if properties.is_null() {
+        return JniResult::Ok(None);
+    }
+
+    let interface_name = env
+        .call_method(
+            &properties,
+            jni_str!("getInterfaceName"),
+            jni_sig!("()Ljava/lang/String;"),
+            &[],
+        )?
+        .l()?;
+    if interface_name.is_null() {
+        return JniResult::Ok(None);
+    }
+
+    JniResult::Ok(Some(
+        env.cast_local::<JString>(interface_name)?.to_string(),
+    ))
 }
 
 pub fn vm() -> JavaVM {
@@ -421,7 +511,9 @@ fn usb_network_ip() -> Option<IpAddr> {
             let count = env
                 .call_method(&addresses, jni_str!("size"), jni_sig!("()I"), &[])?
                 .i()?;
-            let mut ipv6 = None;
+            let mut ipv4 = None;
+            let mut link_local_ipv6 = None;
+            let mut other_ipv6 = None;
             for address_index in 0..count {
                 let link_address = env
                     .call_method(
@@ -450,14 +542,21 @@ fn usb_network_ip() -> Option<IpAddr> {
                 let host_address = env.cast_local::<JString>(host_address)?.to_string();
                 let host_address = host_address.split('%').next().unwrap_or(&host_address);
                 if let Ok(ip) = host_address.parse::<IpAddr>() {
-                    if ip.is_ipv4() {
-                        return JniResult::Ok(Some(ip));
+                    match ip {
+                        IpAddr::V4(_) => ipv4 = Some(ip),
+                        IpAddr::V6(address) if address.is_unicast_link_local() => {
+                            link_local_ipv6 = Some(ip)
+                        }
+                        IpAddr::V6(_) => other_ipv6 = Some(ip),
                     }
-                    ipv6 = Some(ip);
                 }
             }
-            if ipv6.is_some() {
-                return JniResult::Ok(ipv6);
+            // The USB link is IPv6 link-local only: the host's NCM adapter gets no address in the
+            // headset's IPv4 subnet, so announcing that IPv4 makes the server send the connection
+            // out of its internet adapter instead. Prefer the link-local address the host can
+            // reach, and keep the IPv4 for links that actually share a subnet with the host.
+            if let Some(ip) = link_local_ipv6.or(ipv4).or(other_ipv6) {
+                return JniResult::Ok(Some(ip));
             }
         }
 
