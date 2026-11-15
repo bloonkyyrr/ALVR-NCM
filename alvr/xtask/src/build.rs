@@ -288,19 +288,32 @@ pub fn build_launcher(profile: Profile, reproducible: bool) {
     }
     let common_flags_ref = &common_flags;
 
-    sh.create_dir(afs::launcher_build_dir()).unwrap();
+    fs::create_dir_all(afs::launcher_build_dir()).unwrap();
 
-    cmd!(sh, "cargo build -p alvr_launcher {common_flags_ref...}")
-        .run()
-        .unwrap();
-
-    sh.copy_file(
-        afs::target_dir()
-            .join(profile.to_string())
-            .join(afs::exec_fname("alvr_launcher")),
-        afs::launcher_build_exe_path(),
+    // Ask cargo where the executable ended up instead of assuming
+    // `target/<profile>/`, which is not where custom profiles always write.
+    let stdout = cmd!(
+        sh,
+        "cargo build -p alvr_launcher {common_flags_ref...} --message-format=json-render-diagnostics"
     )
+    .read()
     .unwrap();
+
+    let launcher_exe = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| message["reason"] == "compiler-artifact")
+        .filter(|message| message["target"]["name"] == "alvr_launcher")
+        .filter_map(|message| message["executable"].as_str().map(PathBuf::from))
+        .next_back()
+        .unwrap_or_else(|| {
+            afs::target_dir()
+                .join(profile.to_string())
+                .join(afs::exec_fname("alvr_launcher"))
+        });
+
+    sh.copy_file(launcher_exe, afs::launcher_build_exe_path())
+        .unwrap();
 }
 
 fn build_android_lib_impl(dir_name: &str, profile: Profile, link_stdcpp: bool, all_targets: bool) {
