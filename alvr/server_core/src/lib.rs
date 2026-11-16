@@ -237,7 +237,13 @@ impl ServerCoreContext {
             haptics_sender: Mutex::new(None),
         });
 
-        let webserver_runtime = Runtime::new().unwrap();
+        // A localhost web server for the dashboard cannot use one worker per CPU core. Two
+        // workers keep it responsive while reducing the parked worker threads.
+        let webserver_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
         webserver_runtime.spawn({
             let connection_context = Arc::clone(&connection_context);
             async move { alvr_common::show_err(web_server::web_server(connection_context).await) }

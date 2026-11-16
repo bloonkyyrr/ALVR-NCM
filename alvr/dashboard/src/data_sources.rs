@@ -411,7 +411,12 @@ impl DataSources {
                         continue;
                     };
 
-                    ws.get_mut().set_nonblocking(true).ok();
+                    // Block on the socket with a timeout instead of spinning: events are still
+                    // handled as soon as they arrive, but an idle connection no longer wakes the
+                    // thread every 50 ms.
+                    ws.get_mut()
+                        .set_read_timeout(Some(Duration::from_millis(200)))
+                        .ok();
 
                     while running.value() {
                         match ws.read() {
@@ -429,10 +434,9 @@ impl DataSources {
                             }
                             Err(e) => {
                                 if let tungstenite::Error::Io(e) = e
-                                    && e.kind() == ErrorKind::WouldBlock
+                                    && matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
                                 {
-                                    thread::sleep(Duration::from_millis(50));
-
+                                    // No event within the read timeout. Re-check `running`.
                                     continue;
                                 }
 

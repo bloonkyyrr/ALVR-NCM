@@ -48,6 +48,22 @@ impl VideoDecoderSource {
         #[cfg(not(target_os = "android"))]
         None
     }
+
+    /// Block until a frame is available or the deadline passes, without polling.
+    pub fn get_frame_until(
+        &mut self,
+        deadline: std::time::Instant,
+    ) -> Option<(Duration, *mut std::ffi::c_void)> {
+        #[cfg(target_os = "android")]
+        {
+            self.inner.dequeue_frame_until(deadline)
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = deadline;
+            None
+        }
+    }
 }
 
 // report_frame_decoded: (target_timestamp: Duration) -> ()

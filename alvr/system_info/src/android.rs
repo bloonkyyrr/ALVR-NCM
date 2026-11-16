@@ -324,18 +324,6 @@ pub fn context() -> jobject {
     ndk_context::android_context().context().cast()
 }
 
-fn get_api_level() -> i32 {
-    vm().attach_current_thread(|env| {
-        env.get_static_field(
-            jni_str!("android/os/Build$VERSION"),
-            jni_str!("SDK_INT"),
-            jni_sig!("I"),
-        )?
-        .i()
-    })
-    .unwrap()
-}
-
 /// Requests missing permissions together without waiting for the user's response.
 pub fn try_get_permissions(permissions: &[&str]) {
     vm().attach_current_thread(|env| {

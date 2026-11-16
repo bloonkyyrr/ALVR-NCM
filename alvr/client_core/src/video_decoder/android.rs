@@ -24,7 +24,7 @@ use std::{
     ptr,
     sync::{Arc, Weak},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 struct FakeThreadSafe<T>(T);
@@ -90,6 +90,8 @@ pub struct VideoDecoderSource {
     running: Arc<RelaxedAtomic>,
     dequeue_thread: Option<JoinHandle<()>>,
     image_queue: Arc<Mutex<VecDeque<QueuedImage>>>,
+    // Signalled when a decoded frame is queued, so the render thread can sleep instead of polling.
+    image_notifier: Arc<Condvar>,
     config: VideoDecoderConfig,
     buffering_running_average: f32,
 }
@@ -97,6 +99,37 @@ pub struct VideoDecoderSource {
 unsafe impl Send for VideoDecoderSource {}
 
 impl VideoDecoderSource {
+    // Block (without polling) until a frame is queued or the deadline is reached, then return the
+    // front frame if one is available. Avoids the render thread waking up every few hundred micros.
+    pub fn dequeue_frame_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Option<(Duration, *mut c_void)> {
+        loop {
+            {
+                let mut image_queue_lock = self.image_queue.lock();
+
+                while image_queue_lock.is_empty() {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+
+                    self.image_notifier
+                        .wait_for(&mut image_queue_lock, deadline - now);
+                }
+            }
+
+            if let Some(frame) = self.dequeue_frame() {
+                return Some(frame);
+            }
+
+            if Instant::now() >= deadline {
+                return None;
+            }
+        }
+    }
+
     // The application MUST finish using the returned buffer before calling this function again
     pub fn dequeue_frame(&mut self) -> Option<(Duration, *mut c_void)> {
         let mut image_queue_lock = self.image_queue.lock();
@@ -198,6 +231,7 @@ fn decoder_lifecycle(
     decoder_sink: Arc<Mutex<Option<SharedMediaCodec>>>,
     decoder_ready_notifier: Arc<Condvar>,
     image_queue: Arc<Mutex<VecDeque<QueuedImage>>>,
+    image_notifier: Arc<Condvar>,
     image_reader: &mut ImageReader,
 ) -> Result<()> {
     // 2x: keep the target buffering in the middle of the max amount of queuable frames
@@ -205,6 +239,7 @@ fn decoder_lifecycle(
 
     image_reader.set_image_listener(Box::new({
         let image_queue = Arc::clone(&image_queue);
+        let image_notifier = Arc::clone(&image_notifier);
         move |image_reader| {
             let mut image_queue_lock = image_queue.lock();
 
@@ -226,6 +261,9 @@ fn decoder_lifecycle(
                         image,
                         in_use: false,
                     });
+
+                    // Wake the render thread that is waiting for a frame.
+                    image_notifier.notify_one();
                 }
                 Ok(e) => {
                     error!("ImageReader error: {e:?}");
@@ -310,7 +348,9 @@ fn decoder_lifecycle(
 
     let mut error_counter = 0;
     while running.value() {
-        match decoder.dequeue_output_buffer(Duration::from_millis(1)) {
+        // A longer blocking timeout cuts idle wakeups tenfold; AMediaCodec returns as soon as a
+        // buffer is available, so this does not add output latency.
+        match decoder.dequeue_output_buffer(Duration::from_millis(10)) {
             Ok(DequeuedOutputBufferInfoResult::Buffer(buffer)) => {
                 // The buffer timestamp is actually nanoseconds
                 let presentation_time_ns = buffer.info().presentation_time_us();
@@ -358,6 +398,7 @@ pub fn video_decoder_split(
     let decoder_sink = Arc::new(Mutex::new(None::<SharedMediaCodec>));
     let decoder_ready_notifier = Arc::new(Condvar::new());
     let image_queue = Arc::new(Mutex::new(VecDeque::<QueuedImage>::new()));
+    let image_notifier = Arc::new(Condvar::new());
 
     let dequeue_thread = thread::spawn({
         let config = config.clone();
@@ -365,6 +406,7 @@ pub fn video_decoder_split(
         let decoder_sink = Arc::clone(&decoder_sink);
         let decoder_ready_notifier = Arc::clone(&decoder_ready_notifier);
         let image_queue = Arc::clone(&image_queue);
+        let image_notifier = Arc::clone(&image_notifier);
         move || {
             const MAX_BUFFERING_FRAMES: usize = 10;
             let mut image_reader = match ImageReader::new_with_usage(
@@ -391,6 +433,7 @@ pub fn video_decoder_split(
                 decoder_sink,
                 decoder_ready_notifier,
                 Arc::clone(&image_queue),
+                image_notifier,
                 &mut image_reader,
             ) {
                 frame_result_callback(Err(e));
@@ -418,6 +461,7 @@ pub fn video_decoder_split(
         running,
         dequeue_thread: Some(dequeue_thread),
         image_queue,
+        image_notifier,
         config,
         buffering_running_average: 0.0,
     };

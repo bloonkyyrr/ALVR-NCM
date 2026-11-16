@@ -17,7 +17,9 @@ use std::{
 };
 
 const INPUT_SAMPLES_MAX_BUFFER_COUNT: usize = 20;
-const INPUT_RECV_TIMEOUT: Duration = Duration::from_millis(20);
+// Only a floor on how often the idle loop re-checks its state: samples wake the receive call
+// immediately, so a longer timeout cuts idle wakeups without adding microphone latency.
+const INPUT_RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[allow(unused_variables)]
 pub fn record_audio_blocking(

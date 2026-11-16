@@ -346,13 +346,13 @@ impl StreamContext {
             + Duration::from_secs_f32(
                 frame_interval.as_secs_f32() * DECODER_MAX_TIMEOUT_MULTIPLIER,
             );
-        let mut frame_result = None;
-        if let Some((_, source)) = &mut self.decoder {
-            while frame_result.is_none() && Instant::now() < frame_poll_deadline {
-                frame_result = source.get_frame();
-                thread::sleep(Duration::from_micros(500));
-            }
-        }
+        // Wait efficiently for the decoded frame instead of polling every 500 µs (which woke the
+        // CPU up thousands of times per second and added up to 500 µs of latency per frame).
+        let frame_result = if let Some((_, source)) = &mut self.decoder {
+            source.get_frame_until(frame_poll_deadline)
+        } else {
+            None
+        };
 
         let (timestamp, frame_metadata, buffer_ptr) =
             if let Some((timestamp, buffer_ptr)) = frame_result {

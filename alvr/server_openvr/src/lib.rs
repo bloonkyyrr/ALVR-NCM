@@ -238,10 +238,11 @@ fn spawn_event_loop(events_receiver: mpsc::Receiver<ServerCoreEvent>) {
 
         let mut last_resync = Instant::now();
         loop {
-            let event = match events_receiver.recv_timeout(Duration::from_millis(5)) {
+            // Block until an event arrives instead of waking up every 5 ms for nothing. The
+            // sender lives in the server context, so a disconnect means the context is gone.
+            let event = match events_receiver.recv() {
                 Ok(event) => event,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(_) => break,
             };
 
             match event {
