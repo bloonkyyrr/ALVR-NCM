@@ -429,11 +429,13 @@ pub fn build_android_client(profile: Profile) {
     .run()
     .unwrap();
 
+    // Name the APK after the fork so it is not mistaken for an upstream ALVR build. The build
+    // directory and keystore keep their name so the signing key stays the same.
     sh.copy_file(
         afs::target_dir()
             .join(profile.to_string())
             .join("apk/alvr_client_openxr.apk"),
-        build_dir.join(format!("{ARTIFACT_NAME}.apk")),
+        build_dir.join("ALVR - NCM.apk"),
     )
     .unwrap();
 }

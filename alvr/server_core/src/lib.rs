@@ -326,7 +326,28 @@ impl ServerCoreContext {
             Duration::from_millis(SESSION_MANAGER.read().settings().headset.max_prediction_ms);
 
         if latency > max_prediction {
-            warn!("Latency is too high. Clamping prediction");
+            // This is called once per tracking packet (~270 Hz while streaming), so an identical
+            // warning would flood the log. Report the clamp at most once every 10 seconds, with
+            // the measured value, and only while the clamp is actually active.
+            const WARNING_INTERVAL: Duration = Duration::from_secs(10);
+            static LAST_WARNING: LazyLock<Mutex<Option<Instant>>> =
+                LazyLock::new(|| Mutex::new(None));
+
+            let should_warn = {
+                let mut last_warning = LAST_WARNING.lock();
+                let should_warn = last_warning
+                    .is_none_or(|instant| instant.elapsed() >= WARNING_INTERVAL);
+                if should_warn {
+                    *last_warning = Some(Instant::now());
+                }
+                should_warn
+            };
+
+            if should_warn {
+                warn!(
+                    "Latency is too high. Clamping prediction ({latency:?} > {max_prediction:?})"
+                );
+            }
 
             max_prediction
         } else {

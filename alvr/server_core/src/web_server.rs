@@ -211,60 +211,92 @@ async fn capture_frame(State(ctx): State<Arc<ConnectionContext>>) {
 }
 
 async fn start_recording(State(ctx): State<Arc<ConnectionContext>>) {
-    crate::create_recording_file(&ctx, crate::SESSION_MANAGER.read().settings())
+    // Creating the recording file is disk I/O; keep it off the dashboard workers.
+    let _ = tokio::task::spawn_blocking(move || {
+        crate::create_recording_file(&ctx, crate::SESSION_MANAGER.read().settings())
+    })
+    .await;
 }
 
 async fn stop_recording(State(ctx): State<Arc<ConnectionContext>>) {
     *ctx.video_recording_file.lock() = None;
 }
 
+// The web server runtime is small (two workers) because it only serves the dashboard. These
+// handlers spawn processes or touch the registry/disk, so they run on the blocking pool to make
+// sure a slow dashboard action can never occupy a worker the event websocket needs.
 async fn add_firewall_rules() {
-    if let Err(e) =
-        alvr_server_io::firewall_rules(FirewallRulesAction::Add, FILESYSTEM_LAYOUT.get().unwrap())
-    {
-        error!("Failed to add firewall rules! code: {e}");
-    } else {
-        info!("Successfully added firewall rules!");
-    }
+    let _ = tokio::task::spawn_blocking(|| {
+        if let Err(e) =
+            alvr_server_io::firewall_rules(FirewallRulesAction::Add, FILESYSTEM_LAYOUT.get().unwrap())
+        {
+            error!("Failed to add firewall rules! code: {e}");
+        } else {
+            info!("Successfully added firewall rules!");
+        }
+    })
+    .await;
 }
 
 async fn remove_firewall_rules() {
-    if let Err(e) = alvr_server_io::firewall_rules(
-        FirewallRulesAction::Remove,
-        FILESYSTEM_LAYOUT.get().unwrap(),
-    ) {
-        error!("Failed to remove firewall rules! code: {e}");
-    } else {
-        info!("Successfully removed firewall rules!");
-    }
+    let _ = tokio::task::spawn_blocking(|| {
+        if let Err(e) = alvr_server_io::firewall_rules(
+            FirewallRulesAction::Remove,
+            FILESYSTEM_LAYOUT.get().unwrap(),
+        ) {
+            error!("Failed to remove firewall rules! code: {e}");
+        } else {
+            info!("Successfully removed firewall rules!");
+        }
+    })
+    .await;
 }
 
 async fn get_driver_list() {
-    if let Ok(list) = alvr_server_io::get_registered_drivers() {
+    let list = tokio::task::spawn_blocking(alvr_server_io::get_registered_drivers)
+        .await
+        .ok()
+        .and_then(Result::ok);
+
+    if let Some(list) = list {
         alvr_events::send_event(EventType::DriversList(list));
     }
 }
 
 async fn register_alvr_driver() {
-    alvr_server_io::driver_registration(
-        &[FILESYSTEM_LAYOUT
-            .get()
-            .unwrap()
-            .openvr_driver_root_dir
-            .clone()],
-        true,
-    )
-    .ok();
+    let list = tokio::task::spawn_blocking(|| {
+        alvr_server_io::driver_registration(
+            &[FILESYSTEM_LAYOUT
+                .get()
+                .unwrap()
+                .openvr_driver_root_dir
+                .clone()],
+            true,
+        )
+        .ok();
 
-    if let Ok(list) = alvr_server_io::get_registered_drivers() {
+        alvr_server_io::get_registered_drivers().ok()
+    })
+    .await
+    .ok()
+    .flatten();
+
+    if let Some(list) = list {
         alvr_events::send_event(EventType::DriversList(list));
     }
 }
 
 async fn unregister_driver(Json(path): Json<PathBuf>) {
-    alvr_server_io::driver_registration(&[path], false).ok();
+    let list = tokio::task::spawn_blocking(move || {
+        alvr_server_io::driver_registration(&[path], false).ok();
 
-    if let Ok(list) = alvr_server_io::get_registered_drivers() {
+        alvr_server_io::get_registered_drivers().ok()
+    })
+    .await
+    .ok()
+    .flatten();
+
+    if let Some(list) = list {
         alvr_events::send_event(EventType::DriversList(list));
     }
 }
