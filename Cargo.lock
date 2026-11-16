@@ -328,6 +328,7 @@ dependencies = [
  "alvr_session",
  "glow 0.16.0",
  "glyph_brush_layout",
+ "image",
  "khronos-egl",
  "pollster",
  "wgpu 25.0.2",

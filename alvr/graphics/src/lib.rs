@@ -35,6 +35,7 @@ type ImageTargetTexture2DFn = unsafe extern "C" fn(egl::Enum, egl::EGLImage);
 
 pub struct HandData {
     pub grip_motion: Option<DeviceMotion>,
+    pub aim_motion: Option<DeviceMotion>,
     pub detached_grip_motion: Option<DeviceMotion>,
     pub skeleton_joints: Option<[Pose; 26]>,
 }

@@ -757,17 +757,20 @@ pub extern "C" fn alvr_render_lobby_opengl(
                 [
                     HandData {
                         grip_motion: None,
+                        aim_motion: None,
                         detached_grip_motion: None,
                         skeleton_joints: None,
                     },
                     HandData {
                         grip_motion: None,
+                        aim_motion: None,
                         detached_grip_motion: None,
                         skeleton_joints: None,
                     },
                 ],
                 None,
                 vec![],
+                &[],
                 render_background,
                 false,
             );

@@ -15,6 +15,7 @@ mod storage;
 #[cfg(target_os = "android")]
 mod audio;
 
+pub mod lobby_command;
 pub mod video_decoder;
 
 use alvr_common::{
@@ -93,6 +94,8 @@ impl ClientCoreContext {
     #[cfg_attr(not(target_os = "android"), expect(unused_variables))]
     pub fn new(capabilities: ClientCapabilities, additional_permissions: Vec<&str>) -> Self {
         dbg_client_core!("Create");
+
+        lobby_command::spawn_listener();
 
         // Make sure to reset config in case of version compat mismatch.
         if Config::load().protocol_id != alvr_common::protocol_id() {

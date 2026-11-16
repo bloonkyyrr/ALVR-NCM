@@ -427,8 +427,6 @@ pub fn entry_point() {
 
                             core_context.resume();
 
-                            passthrough_layer = PassthroughLayer::new(&xr_session, platform).ok();
-
                             session_running = true;
                         }
                         xr::SessionState::STOPPING => {
@@ -511,9 +509,9 @@ pub fn entry_point() {
                         core_context.send_proximity_state(headset_is_worn);
                     }
                     ClientCoreEvent::StreamingStopped => {
-                        if passthrough_layer.is_none() {
-                            passthrough_layer = PassthroughLayer::new(&xr_session, platform).ok();
-                        }
+                        // The lobby is always opaque: passthrough is only ever enabled by the
+                        // stream's real time config while a passthrough stream is running.
+                        passthrough_layer = None;
 
                         interaction_context
                             .write()

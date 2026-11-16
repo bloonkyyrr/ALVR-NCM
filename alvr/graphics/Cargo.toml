@@ -15,3 +15,6 @@ glyph_brush_layout = "0.2"
 khronos-egl = { version = "6", features = ["dynamic"] }
 pollster = "0.4"
 wgpu = "25"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }

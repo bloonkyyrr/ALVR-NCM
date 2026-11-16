@@ -2,13 +2,28 @@ use crate::{
     graphics::{self, ProjectionLayerAlphaConfig, ProjectionLayerBuilder},
     interaction::{self, InteractionContext},
 };
-use alvr_common::{Pose, ViewParams, glam::UVec2, parking_lot::RwLock};
-use alvr_graphics::{GraphicsContext, LobbyRenderer, LobbyViewParams, SDR_FORMAT_GL};
+use alvr_client_core::lobby_command::{self, LobbyCommand};
+use alvr_common::{
+    Pose, ViewParams,
+    glam::{UVec2, Vec3},
+    inputs::{LEFT_TRIGGER_CLICK_ID, RIGHT_TRIGGER_CLICK_ID},
+    parking_lot::RwLock,
+};
+use alvr_graphics::{
+    GraphicsContext, LobbyButton, LobbyLaser, LobbyRenderer, LobbyViewParams, SDR_FORMAT_GL,
+    lobby_ray_hit,
+};
 use alvr_system_info::Platform;
 use openxr as xr;
-use std::{rc::Rc, sync::Arc, time::Duration};
+use std::{
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-// todo: add interaction?
+const PRESSED_HIGHLIGHT_DURATION: Duration = Duration::from_millis(900);
+const LASER_LENGTH: f32 = 6.0;
+
 pub struct Lobby {
     xr_session: xr::Session<xr::OpenGlEs>,
     interaction_ctx: Arc<RwLock<InteractionContext>>,
@@ -18,6 +33,9 @@ pub struct Lobby {
     view_resolution: UVec2,
     reference_space_type: xr::ReferenceSpaceType,
     renderer: LobbyRenderer,
+    hud_message: String,
+    hovered_button: Option<LobbyButton>,
+    pressed_button: Option<(LobbyButton, Instant)>,
 }
 
 impl Lobby {
@@ -73,6 +91,9 @@ impl Lobby {
             view_resolution,
             reference_space_type,
             renderer,
+            hud_message: initial_hud_message.to_owned(),
+            hovered_button: None,
+            pressed_button: None,
         }
     }
 
@@ -81,8 +102,18 @@ impl Lobby {
             interaction::get_reference_space(&self.xr_session, self.reference_space_type);
     }
 
-    pub fn update_hud_message(&self, message: &str) {
-        self.renderer.update_hud_message(message);
+    pub fn update_hud_message(&mut self, message: &str) {
+        self.hud_message = message.to_owned();
+        self.refresh_hud();
+    }
+
+    fn refresh_hud(&mut self) {
+        let pressed_button = self.pressed_button.and_then(|(button, pressed_at)| {
+            (pressed_at.elapsed() < PRESSED_HIGHLIGHT_DURATION).then_some(button)
+        });
+
+        self.renderer
+            .update_hud(&self.hud_message, self.hovered_button, pressed_button);
     }
 
     pub fn render(&mut self, vsync_time: Duration) -> ProjectionLayerBuilder<'_> {
@@ -148,6 +179,82 @@ impl Lobby {
                 interaction::get_body_skeleton(source, &self.reference_space, vsync_time)
             });
 
+        // Each controller (or tracked hand) casts a laser at the text wall. Without tracked hands
+        // the gaze ray keeps the buttons usable.
+        let mut lasers = Vec::with_capacity(2);
+        let mut hand_hits = [None; 2];
+        let mut hovered_button = None;
+
+        for (index, data) in [&left_hand_data, &right_hand_data].iter().enumerate() {
+            let Some(motion) = data.aim_motion.or(data.grip_motion) else {
+                continue;
+            };
+
+            let start = motion.pose.position;
+            let direction = motion.pose.orientation * Vec3::NEG_Z;
+            let (end, button) = match lobby_ray_hit(start, direction) {
+                Some((hit, button)) => (hit, button),
+                None => (start + direction * LASER_LENGTH, None),
+            };
+
+            lasers.push(LobbyLaser { start, end });
+            hand_hits[index] = button;
+            hovered_button = hovered_button.or(button);
+        }
+
+        if lasers.is_empty() {
+            let left_eye = crate::from_xr_pose(views[0].pose);
+            let right_eye = crate::from_xr_pose(views[1].pose);
+            let gaze_origin = (left_eye.position + right_eye.position) * 0.5;
+            let gaze_direction = left_eye.orientation * Vec3::NEG_Z;
+
+            hovered_button =
+                lobby_ray_hit(gaze_origin, gaze_direction).and_then(|(_, button)| button);
+        }
+
+        if hovered_button != self.hovered_button {
+            self.hovered_button = hovered_button;
+            self.refresh_hud();
+        }
+
+        if let Some((_, pressed_at)) = self.pressed_button
+            && pressed_at.elapsed() >= PRESSED_HIGHLIGHT_DURATION
+        {
+            self.pressed_button = None;
+            self.refresh_hud();
+        }
+
+        let trigger_clicked = {
+            let interaction_context = self.interaction_ctx.read();
+            [&*LEFT_TRIGGER_CLICK_ID, &*RIGHT_TRIGGER_CLICK_ID].map(|id| {
+                match interaction_context.button_actions.get(id) {
+                    Some(interaction::ButtonAction::Binary(action)) => action
+                        .state(&self.xr_session, xr::Path::NULL)
+                        .map(|state| state.changed_since_last_sync && state.current_state)
+                        .unwrap_or(false),
+                    _ => false,
+                }
+            })
+        };
+
+        for (index, clicked) in trigger_clicked.into_iter().enumerate() {
+            if !clicked {
+                continue;
+            }
+
+            if let Some(button) = hand_hits[index].or(self.hovered_button) {
+                lobby_command::request_steamvr(match button {
+                    LobbyButton::LaunchSteamvr => LobbyCommand::LaunchSteamvr,
+                    LobbyButton::RestartSteamvr => LobbyCommand::RestartSteamvr,
+                });
+
+                self.pressed_button = Some((button, Instant::now()));
+                self.refresh_hud();
+
+                break;
+            }
+        }
+
         let left_swapchain_idx = self.swapchains[0].acquire_image().unwrap();
         let right_swapchain_idx = self.swapchains[1].acquire_image().unwrap();
 
@@ -178,6 +285,7 @@ impl Lobby {
             [left_hand_data, right_hand_data],
             body_skeleton,
             additional_motions,
+            &lasers,
             false,
             cfg!(debug_assertions),
         );

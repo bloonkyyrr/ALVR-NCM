@@ -11,6 +11,11 @@ mod data_sources_wasm;
 #[cfg(target_os = "linux")]
 mod linux_checks;
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_os = "linux")]
+mod linux_checks;
+#[cfg(not(target_arch = "wasm32"))]
+mod lobby_commands;
+#[cfg(not(target_arch = "wasm32"))]
 mod logging_backend;
 #[cfg(not(target_arch = "wasm32"))]
 mod steamvr_launcher;
@@ -42,6 +47,8 @@ fn main() {
 
     let (server_events_sender, server_events_receiver) = mpsc::channel();
     logging_backend::init_logging(server_events_sender.clone());
+
+    lobby_commands::spawn_listener();
 
     // Kill any other dashboard instance
     let self_path = std::env::current_exe().unwrap().canonicalize().unwrap();

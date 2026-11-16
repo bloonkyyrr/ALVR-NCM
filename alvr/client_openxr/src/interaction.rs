@@ -103,9 +103,7 @@ pub struct HandInteraction {
     pub grip_action: xr::Action<xr::Posef>,
     pub grip_space: xr::Space,
 
-    #[expect(dead_code)]
     pub aim_action: xr::Action<xr::Posef>,
-    #[expect(dead_code)]
     pub aim_space: xr::Space,
 
     pub detached_grip_action: Option<xr::Action<xr::Posef>>,
@@ -842,6 +840,25 @@ pub fn get_hand_data(
         None
     };
 
+    // The aim pose points along the controller, so the lobby can use it as a laser pointer.
+    let aim_motion = if hand_source
+        .aim_action
+        .is_active(xr_session, xr::Path::NULL)
+        .unwrap_or(false)
+        && let Ok((location, velocity)) = hand_source.aim_space.relate(reference_space, xr_time)
+        && location.location_flags.contains(
+            xr::SpaceLocationFlags::ORIENTATION_VALID | xr::SpaceLocationFlags::POSITION_VALID,
+        )
+    {
+        Some(DeviceMotion {
+            pose: crate::from_xr_pose(location.pose),
+            linear_velocity: crate::from_xr_vec3(velocity.linear_velocity),
+            angular_velocity: crate::from_xr_vec3(velocity.angular_velocity),
+        })
+    } else {
+        None
+    };
+
     let detached_grip_motion = if let Some(detached_grip_action) = &hand_source.detached_grip_action
         && detached_grip_action
             .is_active(xr_session, xr::Path::NULL)
@@ -911,6 +928,7 @@ pub fn get_hand_data(
 
     HandData {
         grip_motion,
+        aim_motion,
         detached_grip_motion,
         skeleton_joints,
     }

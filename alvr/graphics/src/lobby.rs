@@ -1,7 +1,7 @@
 use super::{GraphicsContext, MAX_PUSH_CONSTANTS_SIZE, SDR_FORMAT};
 use crate::HandData;
 use alvr_common::{
-    BodySkeleton, DeviceMotion, ViewParams,
+    BodySkeleton, DeviceMotion, Pose, ViewParams,
     glam::{IVec2, Mat4, Quat, UVec2, Vec3},
 };
 use glyph_brush_layout::{
@@ -57,6 +57,206 @@ const FAST_BORDER_OFFSETS: [IVec2; 8] = [
     IVec2::new(-2, -2),
 ];
 const MAX_BORDER_OFFSET: i32 = 3;
+
+/// Buttons drawn on the lobby text wall. They are only interactive while the headset shows the
+/// lobby, that is while no stream is running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LobbyButton {
+    LaunchSteamvr,
+    RestartSteamvr,
+}
+
+impl LobbyButton {
+    pub const ALL: [Self; 2] = [Self::LaunchSteamvr, Self::RestartSteamvr];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LaunchSteamvr => "Launch SteamVR",
+            Self::RestartSteamvr => "Restart SteamVR",
+        }
+    }
+}
+
+/// Pointer beam aimed at the lobby text wall, in the lobby reference space.
+pub struct LobbyLaser {
+    pub start: Vec3,
+    pub end: Vec3,
+}
+
+// Button layout in HUD texture space, normalized with the origin at the top left corner
+const BUTTON_WIDTH: f32 = 0.34;
+const BUTTON_HEIGHT: f32 = 0.13;
+const BUTTON_CENTER_V: f32 = 0.62;
+const BUTTON_CENTER_OFFSET: f32 = 0.215;
+const BUTTON_BORDER_WIDTH: f32 = 6.0;
+const BUTTON_FONT_SIZE: f32 = 38.0;
+const HUD_MESSAGE_CENTER_Y: f32 = 330.0;
+
+// Straight colors, premultiplied when blended
+const BUTTON_FILL: [f32; 4] = [0.08, 0.11, 0.15, 0.62];
+const BUTTON_BORDER: [f32; 4] = [0.1, 0.34, 0.55, 0.9];
+const BUTTON_FILL_HOVERED: [f32; 4] = [0.07, 0.25, 0.4, 0.9];
+const BUTTON_FILL_PRESSED: [f32; 4] = [0.16, 0.45, 0.72, 1.0];
+const BUTTON_BORDER_ACTIVE: [f32; 4] = [0.55, 0.86, 1.0, 1.0];
+const LASER_COLOR: [u8; 4] = [255, 60, 60, 220];
+
+fn button_uv_rect(button: LobbyButton) -> ([f32; 2], [f32; 2]) {
+    let center_u = 0.5
+        + match button {
+            LobbyButton::LaunchSteamvr => -BUTTON_CENTER_OFFSET,
+            LobbyButton::RestartSteamvr => BUTTON_CENTER_OFFSET,
+        };
+
+    (
+        [
+            center_u - BUTTON_WIDTH / 2.0,
+            BUTTON_CENTER_V - BUTTON_HEIGHT / 2.0,
+        ],
+        [
+            center_u + BUTTON_WIDTH / 2.0,
+            BUTTON_CENTER_V + BUTTON_HEIGHT / 2.0,
+        ],
+    )
+}
+
+fn hud_wall_transform(index: usize) -> Mat4 {
+    Mat4::from_rotation_y(FRAC_PI_2 * index as f32)
+        * Mat4::from_translation(Vec3::new(0.0, HUD_SIDE / 2.0, -HUD_DIST))
+        * Mat4::from_scale(Vec3::ONE * HUD_SIDE)
+}
+
+fn button_at_uv(uv: [f32; 2]) -> Option<LobbyButton> {
+    LobbyButton::ALL.into_iter().find(|button| {
+        let (min, max) = button_uv_rect(*button);
+        uv[0] >= min[0] && uv[0] <= max[0] && uv[1] >= min[1] && uv[1] <= max[1]
+    })
+}
+
+/// Returns where the ray meets the nearest text wall, and the button at that point if any, in the
+/// lobby reference space.
+pub fn lobby_ray_hit(origin: Vec3, direction: Vec3) -> Option<(Vec3, Option<LobbyButton>)> {
+    let mut nearest = None::<(f32, Vec3, Option<LobbyButton>)>;
+
+    for wall_index in 0..4 {
+        let wall_transform = hud_wall_transform(wall_index);
+        let inverse_wall = wall_transform.inverse();
+        let local_origin = inverse_wall.transform_point3(origin);
+        let local_direction = inverse_wall.transform_vector3(direction);
+
+        if local_direction.z.abs() < f32::EPSILON {
+            continue;
+        }
+
+        let distance_to_wall = -local_origin.z / local_direction.z;
+        if distance_to_wall <= 0.0 {
+            continue;
+        }
+
+        let local_hit = local_origin + local_direction * distance_to_wall;
+        let uv = [local_hit.x + 0.5, 0.5 - local_hit.y];
+        if !(0.0..=1.0).contains(&uv[0]) || !(0.0..=1.0).contains(&uv[1]) {
+            continue;
+        }
+
+        let hit = wall_transform.transform_point3(local_hit);
+        let distance = (hit - origin).length();
+        if nearest.is_none_or(|(nearest_distance, ..)| distance < nearest_distance) {
+            nearest = Some((distance, hit, button_at_uv(uv)));
+        }
+    }
+
+    nearest.map(|(_, hit, button)| (hit, button))
+}
+
+fn blend_px(buffer: &mut [u8], coord: usize, color: [f32; 3], alpha: f32) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let inverse_alpha = 1.0 - alpha;
+
+    for (channel, value) in color.iter().enumerate() {
+        let destination = buffer[coord + channel] as f32 / 255.0;
+        buffer[coord + channel] = ((value * alpha + destination * inverse_alpha) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+    }
+
+    let destination_alpha = buffer[coord + 3] as f32 / 255.0;
+    buffer[coord + 3] = ((alpha + destination_alpha * inverse_alpha) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+}
+
+fn fill_rect(buffer: &mut [u8], min: [f32; 2], max: [f32; 2], color: [f32; 4]) {
+    let side = HUD_TEXTURE_SIDE as f32;
+    let x_start = (min[0] * side).round().clamp(0.0, side) as usize;
+    let y_start = (min[1] * side).round().clamp(0.0, side) as usize;
+    let x_end = (max[0] * side).round().clamp(0.0, side) as usize;
+    let y_end = (max[1] * side).round().clamp(0.0, side) as usize;
+
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            blend_px(
+                buffer,
+                (y * HUD_TEXTURE_SIDE + x) * 4,
+                [color[0], color[1], color[2]],
+                color[3],
+            );
+        }
+    }
+}
+
+fn draw_text(buffer: &mut [u8], font: &FontRef, text: &str, scale: f32, center: (f32, f32)) {
+    let section_glyphs = Layout::default()
+        .h_align(HorizontalAlign::Center)
+        .v_align(VerticalAlign::Center)
+        .calculate_glyphs(
+            &[font],
+            &SectionGeometry {
+                screen_position: center,
+                ..Default::default()
+            },
+            &[SectionText {
+                text,
+                scale: scale.into(),
+                font_id: FontId(0),
+            }],
+        );
+
+    let scaled_font = font.as_scaled(scale);
+
+    for section_glyph in section_glyphs {
+        if let Some(outlined) = scaled_font.outline_glyph(section_glyph.glyph) {
+            let bounds = outlined.px_bounds();
+
+            outlined.draw(|x, y, alpha| {
+                let x = x as i32 + bounds.min.x as i32;
+                let y = y as i32 + bounds.min.y as i32;
+
+                if x >= MAX_BORDER_OFFSET
+                    && y >= MAX_BORDER_OFFSET
+                    && x < HUD_TEXTURE_SIDE as i32 - MAX_BORDER_OFFSET
+                    && y < HUD_TEXTURE_SIDE as i32 - MAX_BORDER_OFFSET
+                {
+                    let coord = (y as usize * HUD_TEXTURE_SIDE + x as usize) * 4;
+
+                    blend_px(buffer, coord, [1.0, 1.0, 1.0], alpha);
+
+                    // Keep the text readable on the transparent background by darkening the
+                    // pixels around it. Button labels sit on an opaque fill instead.
+                    if alpha > 0.3 {
+                        for offset in &FAST_BORDER_OFFSETS {
+                            let coord = ((y + offset.y) as usize * HUD_TEXTURE_SIDE
+                                + (x + offset.x) as usize)
+                                * 4;
+                            if buffer[coord + 3] == 0 {
+                                blend_px(buffer, coord, [0.0, 0.0, 0.0], alpha * 0.75);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+}
 
 const HAND_SKELETON_BONES: [(usize, usize); 19] = [
     // Thumb
@@ -217,6 +417,61 @@ pub struct LobbyViewParams {
     pub view_params: ViewParams,
 }
 
+/// Builds the HUD texture: the status message and the lobby buttons, premultiplied RGBA to match
+/// the premultiplied HUD layer.
+pub fn build_hud_pixels(
+    message: &str,
+    hovered: Option<LobbyButton>,
+    pressed: Option<LobbyButton>,
+) -> Vec<u8> {
+    let ubuntu_font =
+        FontRef::try_from_slice(include_bytes!("../resources/Ubuntu-Medium.ttf")).unwrap();
+
+    let mut buffer = vec![0; HUD_TEXTURE_SIDE * HUD_TEXTURE_SIDE * 4];
+
+    for button in LobbyButton::ALL {
+        let (min, max) = button_uv_rect(button);
+        let (fill, border) = if pressed == Some(button) {
+            (BUTTON_FILL_PRESSED, BUTTON_BORDER_ACTIVE)
+        } else if hovered == Some(button) {
+            (BUTTON_FILL_HOVERED, BUTTON_BORDER_ACTIVE)
+        } else {
+            (BUTTON_FILL, BUTTON_BORDER)
+        };
+
+        fill_rect(&mut buffer, min, max, border);
+
+        let border_inset = BUTTON_BORDER_WIDTH / HUD_TEXTURE_SIDE as f32;
+        fill_rect(
+            &mut buffer,
+            [min[0] + border_inset, min[1] + border_inset],
+            [max[0] - border_inset, max[1] - border_inset],
+            fill,
+        );
+
+        draw_text(
+            &mut buffer,
+            &ubuntu_font,
+            button.label(),
+            BUTTON_FONT_SIZE,
+            (
+                (min[0] + max[0]) * 0.5 * HUD_TEXTURE_SIDE as f32,
+                (min[1] + max[1]) * 0.5 * HUD_TEXTURE_SIDE as f32,
+            ),
+        );
+    }
+
+    draw_text(
+        &mut buffer,
+        &ubuntu_font,
+        message,
+        FONT_SIZE,
+        (HUD_TEXTURE_SIDE as f32 / 2.0, HUD_MESSAGE_CENTER_Y),
+    );
+
+    buffer
+}
+
 pub struct LobbyRenderer {
     context: Rc<GraphicsContext>,
     quad_pipeline: RenderPipeline,
@@ -321,63 +576,18 @@ impl LobbyRenderer {
     }
 
     pub fn update_hud_message(&self, message: &str) {
-        let ubuntu_font =
-            FontRef::try_from_slice(include_bytes!("../resources/Ubuntu-Medium.ttf")).unwrap();
+        self.update_hud(message, None, None);
+    }
 
-        let section_glyphs = Layout::default()
-            .h_align(HorizontalAlign::Center)
-            .v_align(VerticalAlign::Center)
-            .calculate_glyphs(
-                &[&ubuntu_font],
-                &SectionGeometry {
-                    screen_position: (
-                        HUD_TEXTURE_SIDE as f32 / 2_f32,
-                        HUD_TEXTURE_SIDE as f32 / 2_f32,
-                    ),
-                    ..Default::default()
-                },
-                &[SectionText {
-                    text: message,
-                    scale: FONT_SIZE.into(),
-                    font_id: FontId(0),
-                }],
-            );
-
-        let scaled_font = ubuntu_font.as_scaled(FONT_SIZE);
-
-        let mut buffer = vec![0; HUD_TEXTURE_SIDE * HUD_TEXTURE_SIDE * 4];
-
-        for section_glyph in section_glyphs {
-            if let Some(outlined) = scaled_font.outline_glyph(section_glyph.glyph) {
-                let bounds = outlined.px_bounds();
-
-                outlined.draw(|x, y, alpha| {
-                    let x = x as i32 + bounds.min.x as i32;
-                    let y = y as i32 + bounds.min.y as i32;
-
-                    if x >= MAX_BORDER_OFFSET
-                        && y >= MAX_BORDER_OFFSET
-                        && x < HUD_TEXTURE_SIDE as i32 - MAX_BORDER_OFFSET
-                        && y < HUD_TEXTURE_SIDE as i32 - MAX_BORDER_OFFSET
-                    {
-                        let coord = (y as usize * HUD_TEXTURE_SIDE + x as usize) * 4;
-                        let value = (alpha * 255.0) as u8;
-
-                        buffer[coord] = value;
-                        buffer[coord + 1] = value;
-                        buffer[coord + 2] = value;
-
-                        // Render opacity with border
-                        for offset in &FAST_BORDER_OFFSETS {
-                            let coord = ((y + offset.y) as usize * HUD_TEXTURE_SIDE
-                                + (x + offset.x) as usize)
-                                * 4;
-                            buffer[coord + 3] = u8::max(buffer[coord + 3], value);
-                        }
-                    }
-                });
-            }
-        }
+    /// Redraws the HUD texture. `hovered` and `pressed` highlight the lobby button the gaze ray
+    /// points at, and the one that was just triggered.
+    pub fn update_hud(
+        &self,
+        message: &str,
+        hovered: Option<LobbyButton>,
+        pressed: Option<LobbyButton>,
+    ) {
+        let buffer = build_hud_pixels(message, hovered, pressed);
 
         self.context.queue.write_texture(
             TexelCopyTextureInfo {
@@ -406,6 +616,7 @@ impl LobbyRenderer {
         hand_data: [HandData; 2],
         body_skeleton: Option<BodySkeleton>,
         additional_motions: Vec<DeviceMotion>,
+        lasers: &[LobbyLaser],
         render_background: bool,
         show_velocities: bool,
     ) {
@@ -610,6 +821,42 @@ impl LobbyRenderer {
                 );
             }
 
+            // Draw the pointer beams on top of everything else
+            for laser in lasers {
+                let delta = laser.end - laser.start;
+                let length = delta.length();
+                if length < 0.001 {
+                    continue;
+                }
+
+                pass.set_push_constants(
+                    ShaderStages::VERTEX_FRAGMENT,
+                    COLOR_CONST_OFFSET,
+                    &LASER_COLOR,
+                );
+                let transform = Mat4::from_scale_rotation_translation(
+                    Vec3::ONE * length,
+                    Quat::from_rotation_arc(-Vec3::Z, delta / length),
+                    laser.start,
+                );
+                transform_draw(&mut pass, view_proj * transform, 2);
+
+                draw_crosshair(
+                    &mut pass,
+                    &DeviceMotion {
+                        pose: Pose {
+                            orientation: Quat::IDENTITY,
+                            position: laser.end,
+                        },
+                        linear_velocity: Vec3::ZERO,
+                        angular_velocity: Vec3::ZERO,
+                    },
+                    view_proj,
+                    false,
+                    &LASER_COLOR,
+                );
+            }
+
             if let Some(skeleton) = &body_skeleton {
                 let (joints, relations) = match skeleton {
                     BodySkeleton::Fb(skeleton) => {
@@ -648,3 +895,4 @@ impl LobbyRenderer {
         self.context.queue.submit(Some(encoder.finish()));
     }
 }
+
